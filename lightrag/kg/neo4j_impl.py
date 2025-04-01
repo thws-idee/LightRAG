@@ -534,16 +534,13 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(database=self._DATABASE) as session:
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
-                    query = (
-                        """
-                    MERGE (n:base {entity_id: $properties.entity_id})
+                    query = """
+                    MERGE (n:base {entity_id: $entity_id})
                     SET n += $properties
-                    SET n:`%s`
+                    RETURN n
                     """
-                        % entity_type
-                    )
-                    result = await tx.run(query, properties=properties)
-                    logger.debug(
+                    result = await tx.run(query, entity_id=entity_id, properties=properties)
+                    logger.info(
                         f"Upserted node with entity_id '{entity_id}' and properties: {properties}"
                     )
                     await result.consume()  # Ensure result is fully consumed
@@ -655,20 +652,18 @@ class Neo4JStorage(BaseGraphStorage):
                     MATCH (n)
                     OPTIONAL MATCH (n)-[r]-()
                     WITH n, COALESCE(count(r), 0) AS degree
-                    WHERE degree >= $min_degree
                     ORDER BY degree DESC
-                    LIMIT $max_nodes
+                    LIMIT $max
                     WITH collect({node: n}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
                     OPTIONAL MATCH (a)-[r]-(b)
                     WHERE a IN kept_nodes AND b IN kept_nodes
-                    RETURN filtered_nodes AS node_info,
-                           collect(DISTINCT r) AS relationships
+                    RETURN filtered_nodes AS node_info,collect(DISTINCT r) AS relationships
                     """
                     result_set = await session.run(
                         main_query,
-                        {"max_nodes": MAX_GRAPH_NODES, "min_degree": min_degree},
+                        max=MAX_GRAPH_NODES
                     )
 
                 else:
@@ -691,8 +686,8 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH start, nodes, relationships
                     UNWIND nodes AS node
                     OPTIONAL MATCH (node)-[r]-()
+                    WHERE node = start OR EXISTS((start)--(node))
                     WITH node, COALESCE(count(r), 0) AS degree, start, nodes, relationships
-                    WHERE node = start OR EXISTS((start)--(node)) OR degree >= $min_degree
                     ORDER BY
                         CASE
                             WHEN node = start THEN 3
@@ -706,8 +701,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
                     OPTIONAL MATCH (a)-[r]-(b)
                     WHERE a IN kept_nodes AND b IN kept_nodes
-                    RETURN filtered_nodes AS node_info,
-                           collect(DISTINCT r) AS relationships
+                    RETURN filtered_nodes AS node_info,collect(DISTINCT r) AS relationships
                     """
                     result_set = await session.run(
                         main_query,
