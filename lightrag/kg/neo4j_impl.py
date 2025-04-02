@@ -107,6 +107,7 @@ class Neo4JStorage(BaseGraphStorage):
             connection_acquisition_timeout=CONNECTION_ACQUISITION_TIMEOUT,
         ) as _sync_driver:
             for database in (DATABASE, None):
+                logger.info(f"RAGLAB ---- NEO4J using database: {database}")
                 self._DATABASE = database
                 connected = False
 

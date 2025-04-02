@@ -50,6 +50,7 @@ class PostgreSQLDB:
         self.password = config.get("password", None)
         self.database = config.get("database", "postgres")
         self.workspace = config.get("workspace", "default")
+        self.namespace_prefix = config.get("namespace_prefix", "lightrag")
         self.max = 12
         self.increment = 1
         self.pool: Pool | None = None
@@ -102,13 +103,16 @@ class PostgreSQLDB:
             pass
 
     async def check_tables(self):
-        for k, v in TABLES.items():
+        logger.info("RAGLAB --- PostgreSQL, Checking tables in database")
+        logger.info(f"RAGLAB --- PostgreSQL, Info: namespace_prefix: {self.namespace_prefix}")
+        for _, v in TABLES.items():
+            k = v["table"].format(prefix=self.namespace_prefix)
             try:
                 await self.query(f"SELECT 1 FROM {k} LIMIT 1")
             except Exception:
                 try:
                     logger.info(f"PostgreSQL, Try Creating table {k} in database")
-                    await self.execute(v["ddl"])
+                    await self.execute(v["ddl"].format(prefix=self.namespace_prefix))
                     logger.info(
                         f"PostgreSQL, Creation success table {k} in PostgreSQL database"
                     )
@@ -219,6 +223,10 @@ class ClientManager:
                 "POSTGRES_WORKSPACE",
                 config.get("postgres", "workspace", fallback="default"),
             ),
+            "namespace_prefix": os.environ.get(
+                "NAMESPACE_PREFIX",
+                config.get("postgres", "namespace_prefix", fallback="lightrag"),
+            ),          
         }
 
     @classmethod
@@ -261,6 +269,7 @@ class PGKVStorage(BaseKVStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+        logger.info(f"RAGLAB ---- PGKVStorage, namespace_prefix: {self.db.namespace_prefix}")
 
     async def finalize(self):
         if self.db is not None:
@@ -271,7 +280,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get doc_full data by id."""
-        sql = SQL_TEMPLATES["get_by_id_" + self.base_namespace]
+        sql = SQL_TEMPLATES["get_by_id_" + self.base_namespace].format(prefix=self.db.namespace_prefix)
         params = {"workspace": self.db.workspace, "id": id}
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             array_res = await self.db.query(sql, params, multirows=True)
@@ -285,7 +294,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
         """Specifically for llm_response_cache."""
-        sql = SQL_TEMPLATES["get_by_mode_id_" + self.base_namespace]
+        sql = SQL_TEMPLATES["get_by_mode_id_" + self.base_namespace].format(prefix=self.db.namespace_prefix)
         params = {"workspace": self.db.workspace, mode: mode, "id": id}
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             array_res = await self.db.query(sql, params, multirows=True)
@@ -300,7 +309,7 @@ class PGKVStorage(BaseKVStorage):
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get doc_chunks data by id"""
         sql = SQL_TEMPLATES["get_by_ids_" + self.base_namespace].format(
-            ids=",".join([f"'{id}'" for id in ids])
+            ids=",".join([f"'{id}'" for id in ids],prefix=self.db.namespace_prefix),
         )
         params = {"workspace": self.db.workspace}
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -320,14 +329,14 @@ class PGKVStorage(BaseKVStorage):
 
     async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         """Specifically for llm_response_cache."""
-        SQL = SQL_TEMPLATES["get_by_status_" + self.base_namespace]
+        SQL = SQL_TEMPLATES["get_by_status_" + self.base_namespace].format(prefix=self.db.namespace_prefix)
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
         sql = SQL_TEMPLATES["filter_keys"].format(
-            table_name=namespace_to_table_name(self.namespace),
+            table_name=namespace_to_table_name(self.namespace,self.db.namespace_prefix),
             ids=",".join([f"'{id}'" for id in keys]),
         )
         params = {"workspace": self.db.workspace}
@@ -355,7 +364,7 @@ class PGKVStorage(BaseKVStorage):
             pass
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
+                upsert_sql = SQL_TEMPLATES["upsert_doc_full"].format(prefix=self.db.namespace_prefix)
                 _data = {
                     "id": k,
                     "content": v["content"],
@@ -365,7 +374,7 @@ class PGKVStorage(BaseKVStorage):
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             for mode, items in data.items():
                 for k, v in items.items():
-                    upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
+                    upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"].format(prefix=self.db.namespace_prefix)
                     _data = {
                         "workspace": self.db.workspace,
                         "id": k,
@@ -382,7 +391,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def drop(self) -> None:
         """Drop the storage"""
-        drop_sql = SQL_TEMPLATES["drop_all"]
+        drop_sql = SQL_TEMPLATES["drop_all"].format(prefix=self.db.namespace_prefix)
         await self.db.execute(drop_sql)
 
 
@@ -406,6 +415,7 @@ class PGVectorStorage(BaseVectorStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+        logger.info(f"RAGLAB ---- PGVectorStorage, namespace_prefix: {self.db.namespace_prefix}")
 
     async def finalize(self):
         if self.db is not None:
@@ -414,7 +424,7 @@ class PGVectorStorage(BaseVectorStorage):
 
     def _upsert_chunks(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         try:
-            upsert_sql = SQL_TEMPLATES["upsert_chunk"]
+            upsert_sql = SQL_TEMPLATES["upsert_chunk"].format(prefix=self.db.namespace_prefix)
             data: dict[str, Any] = {
                 "workspace": self.db.workspace,
                 "id": item["__id__"],
@@ -432,7 +442,7 @@ class PGVectorStorage(BaseVectorStorage):
         return upsert_sql, data
 
     def _upsert_entities(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_entity"]
+        upsert_sql = SQL_TEMPLATES["upsert_entity"].format(prefix=self.db.namespace_prefix)
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
@@ -452,7 +462,7 @@ class PGVectorStorage(BaseVectorStorage):
         return upsert_sql, data
 
     def _upsert_relationships(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_relationship"]
+        upsert_sql = SQL_TEMPLATES["upsert_relationship"].format(prefix=self.db.namespace_prefix)
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
@@ -524,7 +534,7 @@ class PGVectorStorage(BaseVectorStorage):
             formatted_ids = "NULL"
 
         sql = SQL_TEMPLATES[self.base_namespace].format(
-            embedding_string=embedding_string, doc_ids=formatted_ids
+            embedding_string=embedding_string, doc_ids=formatted_ids, prefix=self.db.namespace_prefix
         )
         params = {
             "workspace": self.db.workspace,
@@ -547,7 +557,7 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return
 
-        table_name = namespace_to_table_name(self.namespace)
+        table_name = namespace_to_table_name(self.namespace,self.db.namespace_prefix)
         if not table_name:
             logger.error(f"Unknown namespace for vector deletion: {self.namespace}")
             return
@@ -573,7 +583,7 @@ class PGVectorStorage(BaseVectorStorage):
         """
         try:
             # Construct SQL to delete the entity
-            delete_sql = """DELETE FROM LIGHTRAG_VDB_ENTITY
+            delete_sql = """DELETE FROM {prefix}VDB_ENTITY
                             WHERE workspace=$1 AND entity_name=$2"""
 
             await self.db.execute(
@@ -591,7 +601,7 @@ class PGVectorStorage(BaseVectorStorage):
         """
         try:
             # Delete relations where the entity is either the source or target
-            delete_sql = """DELETE FROM LIGHTRAG_VDB_RELATION
+            delete_sql = """DELETE FROM {prefix}VDB_RELATION
                             WHERE workspace=$1 AND (source_id=$2 OR target_id=$2)"""
 
             await self.db.execute(
@@ -610,7 +620,7 @@ class PGVectorStorage(BaseVectorStorage):
         Returns:
             List of records with matching ID prefixes
         """
-        table_name = namespace_to_table_name(self.namespace)
+        table_name = namespace_to_table_name(self.namespace,self.db.namespace_prefix)
         if not table_name:
             logger.error(f"Unknown namespace for prefix search: {self.namespace}")
             return []
@@ -645,7 +655,7 @@ class PGVectorStorage(BaseVectorStorage):
         Returns:
             The vector data if found, or None if not found
         """
-        table_name = namespace_to_table_name(self.namespace)
+        table_name = namespace_to_table_name(self.namespace,self.db.namespace_prefix)
         if not table_name:
             logger.error(f"Unknown namespace for ID lookup: {self.namespace}")
             return None
@@ -674,7 +684,7 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return []
 
-        table_name = namespace_to_table_name(self.namespace)
+        table_name = namespace_to_table_name(self.namespace,self.db.namespace_prefix)
         if not table_name:
             logger.error(f"Unknown namespace for IDs lookup: {self.namespace}")
             return []
@@ -699,6 +709,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+        logger.info(f"RAGLAB ---- PGDocStatusStorage, namespace_prefix: {self.db.namespace_prefix}")    
 
     async def finalize(self):
         if self.db is not None:
@@ -707,8 +718,9 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
+        logger.info(f"RAGLAB ---- PGDocStatusStorage, namespace: {self.namespace}, namespace_prefix: {self.db.namespace_prefix}")
         sql = SQL_TEMPLATES["filter_keys"].format(
-            table_name=namespace_to_table_name(self.namespace),
+            table_name=namespace_to_table_name(self.namespace,self.db.namespace_prefix),
             ids=",".join([f"'{id}'" for id in keys]),
         )
         params = {"workspace": self.db.workspace}
@@ -729,7 +741,7 @@ class PGDocStatusStorage(DocStatusStorage):
             raise
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
-        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
+        sql = ("select * from {prefix}DOC_STATUS where workspace=$1 and id=$2").format(prefix=self.db.namespace_prefix)
         params = {"workspace": self.db.workspace, "id": id}
         result = await self.db.query(sql, params, True)
         if result is None or result == []:
@@ -751,7 +763,7 @@ class PGDocStatusStorage(DocStatusStorage):
         if not ids:
             return []
 
-        sql = "SELECT * FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
+        sql = ("SELECT * FROM {prefix}DOC_STATUS WHERE workspace=$1 AND id = ANY($2)").format(prefix=self.db.namespace_prefix)
         params = {"workspace": self.db.workspace, "ids": ids}
 
         results = await self.db.query(sql, params, True)
@@ -775,7 +787,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         sql = """SELECT status as "status", COUNT(1) as "count"
-                   FROM LIGHTRAG_DOC_STATUS
+                   FROM {prefix}DOC_STATUS
                   where workspace=$1 GROUP BY STATUS
                  """
         result = await self.db.query(sql, {"workspace": self.db.workspace}, True)
@@ -788,7 +800,7 @@ class PGDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """all documents with a specific status"""
-        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
+        sql = ("select * from {prefix}DOC_STATUS where workspace=$1 and status=$2").format(prefix=self.db.namespace_prefix)
         params = {"workspace": self.db.workspace, "status": status.value}
         result = await self.db.query(sql, params, True)
         docs_by_status = {
@@ -820,7 +832,7 @@ class PGDocStatusStorage(DocStatusStorage):
         if not data:
             return
 
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status,file_path)
+        sql = ("""insert into {prefix}DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status,file_path)
                  values($1,$2,$3,$4,$5,$6,$7,$8)
                   on conflict(id,workspace) do update set
                   content = EXCLUDED.content,
@@ -829,7 +841,7 @@ class PGDocStatusStorage(DocStatusStorage):
                   chunks_count = EXCLUDED.chunks_count,
                   status = EXCLUDED.status,
                   file_path = EXCLUDED.file_path,
-                  updated_at = CURRENT_TIMESTAMP"""
+                  updated_at = CURRENT_TIMESTAMP""").format(prefix=self.db.namespace_prefix)
         for k, v in data.items():
             # chunks_count is optional
             await self.db.execute(
@@ -848,7 +860,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> None:
         """Drop the storage"""
-        drop_sql = SQL_TEMPLATES["drop_doc_full"]
+        drop_sql = SQL_TEMPLATES["drop_doc_full"].format(prefix=self.db.namespace_prefix)
         await self.db.execute(drop_sql)
 
 
@@ -883,6 +895,7 @@ class PGGraphStorage(BaseGraphStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+        logger.info(f"RAGLAB ---- PGGraphStorage, namespace_prefix: {self.db.namespace_prefix}")    
 
     async def finalize(self):
         if self.db is not None:
@@ -1532,32 +1545,33 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> None:
         """Drop the storage"""
-        drop_sql = SQL_TEMPLATES["drop_vdb_entity"]
+        drop_sql = SQL_TEMPLATES["drop_vdb_entity"].format(prefix=self.db.namespace_prefix)
         await self.db.execute(drop_sql)
-        drop_sql = SQL_TEMPLATES["drop_vdb_relation"]
+        drop_sql = SQL_TEMPLATES["drop_vdb_relation"].format(prefix=self.db.namespace_prefix)
         await self.db.execute(drop_sql)
 
 
 NAMESPACE_TABLE_MAP = {
-    NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
-    NameSpace.KV_STORE_TEXT_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
-    NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
-    NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_VDB_ENTITY",
-    NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_VDB_RELATION",
-    NameSpace.DOC_STATUS: "LIGHTRAG_DOC_STATUS",
-    NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "LIGHTRAG_LLM_CACHE",
+    NameSpace.KV_STORE_FULL_DOCS: "DOC_FULL",
+    NameSpace.KV_STORE_TEXT_CHUNKS: "DOC_CHUNKS",
+    NameSpace.VECTOR_STORE_CHUNKS: "DOC_CHUNKS",
+    NameSpace.VECTOR_STORE_ENTITIES: "VDB_ENTITY",
+    NameSpace.VECTOR_STORE_RELATIONSHIPS: "VDB_RELATION",
+    NameSpace.DOC_STATUS: "DOC_STATUS",
+    NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "LLM_CACHE",
 }
 
 
-def namespace_to_table_name(namespace: str) -> str:
+def namespace_to_table_name(namespace: str, namespace_prefix: str) -> str:
     for k, v in NAMESPACE_TABLE_MAP.items():
         if is_namespace(namespace, k):
-            return v
+            return namespace_prefix + v
 
 
 TABLES = {
-    "LIGHTRAG_DOC_FULL": {
-        "ddl": """CREATE TABLE LIGHTRAG_DOC_FULL (
+    "DOC_FULL": {
+        "table": "{prefix}DOC_FULL",
+        "ddl": """CREATE TABLE {prefix}DOC_FULL (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
                     doc_name VARCHAR(1024),
@@ -1565,11 +1579,12 @@ TABLES = {
                     meta JSONB,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
+	                CONSTRAINT {prefix}DOC_FULL_PK PRIMARY KEY (workspace, id)
                     )"""
     },
-    "LIGHTRAG_DOC_CHUNKS": {
-        "ddl": """CREATE TABLE LIGHTRAG_DOC_CHUNKS (
+    "DOC_CHUNKS": {
+        "table": "{prefix}DOC_CHUNKS",
+        "ddl": """CREATE TABLE {prefix}DOC_CHUNKS (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
                     full_doc_id VARCHAR(256),
@@ -1580,11 +1595,12 @@ TABLES = {
                     file_path VARCHAR(256),
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
+	                CONSTRAINT {prefix}DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
-    "LIGHTRAG_VDB_ENTITY": {
-        "ddl": """CREATE TABLE LIGHTRAG_VDB_ENTITY (
+    "VDB_ENTITY": {
+        "table": "{prefix}VDB_ENTITY",
+        "ddl": """CREATE TABLE {prefix}VDB_ENTITY (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
                     entity_name VARCHAR(255),
@@ -1594,11 +1610,12 @@ TABLES = {
                     update_time TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
-	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
+	                CONSTRAINT {prefix}VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
     },
-    "LIGHTRAG_VDB_RELATION": {
-        "ddl": """CREATE TABLE LIGHTRAG_VDB_RELATION (
+    "VDB_RELATION": {
+        "table": "{prefix}VDB_RELATION",
+        "ddl": """CREATE TABLE {prefix}VDB_RELATION (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
                     source_id VARCHAR(256),
@@ -1609,11 +1626,12 @@ TABLES = {
                     update_time TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
-	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
+	                CONSTRAINT {prefix}VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
     },
-    "LIGHTRAG_LLM_CACHE": {
-        "ddl": """CREATE TABLE LIGHTRAG_LLM_CACHE (
+    "LLM_CACHE": {
+        "table": "{prefix}LLM_CACHE",
+        "ddl": """CREATE TABLE {prefix}LLM_CACHE (
 	                workspace varchar(255) NOT NULL,
 	                id varchar(255) NOT NULL,
 	                mode varchar(32) NOT NULL,
@@ -1621,11 +1639,12 @@ TABLES = {
                     return_value TEXT,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
+	                CONSTRAINT {prefix}LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
                     )"""
     },
-    "LIGHTRAG_DOC_STATUS": {
-        "ddl": """CREATE TABLE LIGHTRAG_DOC_STATUS (
+    "DOC_STATUS": {
+        "table": "{prefix}DOC_STATUS",
+        "ddl": """CREATE TABLE {prefix}DOC_STATUS (
 	               workspace varchar(255) NOT NULL,
 	               id varchar(255) NOT NULL,
 	               content TEXT NULL,
@@ -1636,7 +1655,7 @@ TABLES = {
 	               file_path TEXT NULL,
 	               created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
 	               updated_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
-	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)
+	               CONSTRAINT {prefix}DOC_STATUS_PK PRIMARY KEY (workspace, id)
 	              )"""
     },
 }
@@ -1645,35 +1664,35 @@ TABLES = {
 SQL_TEMPLATES = {
     # SQL for KVStorage
     "get_by_id_full_docs": """SELECT id, COALESCE(content, '') as content
-                                FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
+                                FROM {prefix}DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                 chunk_order_index, full_doc_id
-                                FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
+                                FROM {prefix}DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
-                                FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2
+                                FROM {prefix}LLM_CACHE WHERE workspace=$1 AND mode=$2
                                """,
     "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
-                           FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2 AND id=$3
+                           FROM {prefix}LLM_CACHE WHERE workspace=$1 AND mode=$2 AND id=$3
                           """,
     "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content
-                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id IN ({ids})
+                                 FROM {prefix}DOC_FULL WHERE workspace=$1 AND id IN ({ids})
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                   chunk_order_index, full_doc_id
-                                   FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
+                                   FROM {prefix}DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
                                 """,
     "get_by_ids_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
-                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode= IN ({ids})
+                                 FROM {prefix}LLM_CACHE WHERE workspace=$1 AND mode= IN ({ids})
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
-    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, workspace)
+    "upsert_doc_full": """INSERT INTO {prefix}DOC_FULL (id, content, workspace)
                         VALUES ($1, $2, $3)
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = $2, update_time = CURRENT_TIMESTAMP
                        """,
-    "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,mode)
+    "upsert_llm_response_cache": """INSERT INTO {prefix}LLM_CACHE(workspace,id,original_prompt,return_value,mode)
                                       VALUES ($1, $2, $3, $4, $5)
                                       ON CONFLICT (workspace,mode,id) DO UPDATE
                                       SET original_prompt = EXCLUDED.original_prompt,
@@ -1681,7 +1700,7 @@ SQL_TEMPLATES = {
                                       mode=EXCLUDED.mode,
                                       update_time = CURRENT_TIMESTAMP
                                      """,
-    "upsert_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
+    "upsert_chunk": """INSERT INTO {prefix}DOC_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector, file_path)
                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -1693,7 +1712,7 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = CURRENT_TIMESTAMP
                      """,
-    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
+    "upsert_entity": """INSERT INTO {prefix}VDB_ENTITY (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path)
                       VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -1704,7 +1723,7 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time=CURRENT_TIMESTAMP
                      """,
-    "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
+    "upsert_relationship": """INSERT INTO {prefix}VDB_RELATION (workspace, id, source_id,
                       target_id, content, content_vector, chunk_ids, file_path)
                       VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -1734,37 +1753,37 @@ SQL_TEMPLATES = {
     #    """,
     # DROP tables
     "drop_all": """
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
+	    DROP TABLE IF EXISTS {prefix}DOC_FULL CASCADE;
+	    DROP TABLE IF EXISTS {prefix}DOC_CHUNKS CASCADE;
+	    DROP TABLE IF EXISTS {prefix}LLM_CACHE CASCADE;
+	    DROP TABLE IF EXISTS {prefix}VDB_ENTITY CASCADE;
+	    DROP TABLE IF EXISTS {prefix}VDB_RELATION CASCADE;
        """,
     "drop_doc_full": """
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
+	    DROP TABLE IF EXISTS {prefix}DOC_FULL CASCADE;
        """,
     "drop_doc_chunks": """
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
+	    DROP TABLE IF EXISTS {prefix}DOC_CHUNKS CASCADE;
        """,
     "drop_llm_cache": """
-	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
+	    DROP TABLE IF EXISTS {prefix}LLM_CACHE CASCADE;
        """,
     "drop_vdb_entity": """
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
+	    DROP TABLE IF EXISTS {prefix}VDB_ENTITY CASCADE;
        """,
     "drop_vdb_relation": """
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
+	    DROP TABLE IF EXISTS {prefix}VDB_RELATION CASCADE;
        """,
     "relationships": """
     WITH relevant_chunks AS (
         SELECT id as chunk_id
-        FROM LIGHTRAG_DOC_CHUNKS
+        FROM {prefix}DOC_CHUNKS
         WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
     )
     SELECT source_id as src_id, target_id as tgt_id
     FROM (
         SELECT r.id, r.source_id, r.target_id, 1 - (r.content_vector <=> '[{embedding_string}]'::vector) as distance
-        FROM LIGHTRAG_VDB_RELATION r
+        FROM {prefix}VDB_RELATION r
         JOIN relevant_chunks c ON c.chunk_id = ANY(r.chunk_ids)
         WHERE r.workspace=$1
     ) filtered
@@ -1775,13 +1794,13 @@ SQL_TEMPLATES = {
     "entities": """
         WITH relevant_chunks AS (
             SELECT id as chunk_id
-            FROM LIGHTRAG_DOC_CHUNKS
+            FROM {prefix}DOC_CHUNKS
             WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
         )
         SELECT entity_name FROM
             (
                 SELECT e.id, e.entity_name, 1 - (e.content_vector <=> '[{embedding_string}]'::vector) as distance
-                FROM LIGHTRAG_VDB_ENTITY e
+                FROM {prefix}VDB_ENTITY e
                 JOIN relevant_chunks c ON c.chunk_id = ANY(e.chunk_ids)
                 WHERE e.workspace=$1
             )
@@ -1792,13 +1811,13 @@ SQL_TEMPLATES = {
     "chunks": """
         WITH relevant_chunks AS (
             SELECT id as chunk_id
-            FROM LIGHTRAG_DOC_CHUNKS
+            FROM {prefix}DOC_CHUNKS
             WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
         )
         SELECT id FROM
             (
                 SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-                FROM LIGHTRAG_DOC_CHUNKS
+                FROM {prefix}DOC_CHUNKS
                 where workspace=$1
                 AND id IN (SELECT chunk_id FROM relevant_chunks)
             ) as chunk_distances
