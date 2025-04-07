@@ -89,8 +89,7 @@ class Neo4JStorage(BaseGraphStorage):
             ),
         )
         DATABASE = os.environ.get(
-            "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
-        )
+            "NEO4J_DATABASE", self.namespace)
 
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(
             URI,
@@ -104,6 +103,7 @@ class Neo4JStorage(BaseGraphStorage):
         # Try to connect to the database and create it if it doesn't exist
         for database in (DATABASE, None):
             self._DATABASE = database
+            logger.info(f"RAGLAB ---- NEO4J using database: {database}")
             connected = False
 
             try:

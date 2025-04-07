@@ -229,7 +229,7 @@ class LightRAG:
     vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional parameters for vector database storage."""
 
-    namespace_prefix: str = field(default="lightrag")
+    namespace_prefix: str = field(default=os.getenv("NAMESPACE_PREFIX","lightrag"))
     """Prefix for namespacing stored data across different environments."""
 
     enable_llm_cache: bool = field(default=True)

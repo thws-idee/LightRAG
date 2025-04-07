@@ -278,6 +278,8 @@ class PGKVStorage(BaseKVStorage):
     db: PostgreSQLDB = field(default=None)
 
     def __post_init__(self):
+        namespace_prefix = self.global_config.get("namespace_prefix")
+        self.base_namespace = self.namespace.replace(namespace_prefix, "")
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
     async def initialize(self):
@@ -491,6 +493,8 @@ class PGVectorStorage(BaseVectorStorage):
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        namespace_prefix = self.global_config.get("namespace_prefix")
+        self.base_namespace = self.namespace.replace(namespace_prefix, "")
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
         if cosine_threshold is None:
