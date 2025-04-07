@@ -137,8 +137,28 @@ type SortField = 'created_at' | 'updated_at' | 'id';
 type SortDirection = 'asc' | 'desc';
 
 export default function DocumentManager() {
+  // Track component mount status
+  const isMountedRef = useRef(true);
+
+  // Set up mount/unmount status tracking
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    // Handle page reload/unload
+    const handleBeforeUnload = () => {
+      isMountedRef.current = false;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      isMountedRef.current = false;
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
@@ -167,7 +187,7 @@ export default function DocumentManager() {
   }
 
   // Sort documents based on current sort field and direction
-  const sortDocuments = (documents: DocStatusResponse[]) => {
+  const sortDocuments = useCallback((documents: DocStatusResponse[]) => {
     return [...documents].sort((a, b) => {
       let valueA, valueB;
 
@@ -194,7 +214,7 @@ export default function DocumentManager() {
         return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
       }
     });
-  }
+  }, [sortField, sortDirection, showFileName]);
 
   const filteredAndSortedDocs = useMemo(() => {
     if (!docs) return null;
@@ -223,7 +243,7 @@ export default function DocumentManager() {
     }, {} as DocsStatusesResponse['statuses']);
 
     return { ...filteredDocs, statuses: sortedStatuses };
-  }, [docs, sortField, sortDirection, statusFilter]);
+  }, [docs, sortField, sortDirection, statusFilter, sortDocuments]);
 
   // Calculate document counts for each status
   const documentCounts = useMemo(() => {
@@ -324,7 +344,13 @@ export default function DocumentManager() {
 
   const fetchDocuments = useCallback(async () => {
     try {
-      const docs = await getDocuments()
+      // Check if component is still mounted before starting the request
+      if (!isMountedRef.current) return;
+
+      const docs = await getDocuments();
+
+      // Check again if component is still mounted after the request completes
+      if (!isMountedRef.current) return;
 
       // Get new status counts (treat null as all zeros)
       const newStatusCounts = {
@@ -339,30 +365,36 @@ export default function DocumentManager() {
         status => newStatusCounts[status] !== prevStatusCounts.current[status]
       )
 
-      // Trigger health check if changes detected
-      if (hasStatusCountChange) {
+      // Trigger health check if changes detected and component is still mounted
+      if (hasStatusCountChange && isMountedRef.current) {
         useBackendState.getState().check()
       }
 
-      // Update previous status counts
-      prevStatusCounts.current = newStatusCounts
+      // Only update state if component is still mounted
+      if (isMountedRef.current) {
+        // Update previous status counts
+        prevStatusCounts.current = newStatusCounts
 
-      // Update docs state
-      if (docs && docs.statuses) {
-        const numDocuments = Object.values(docs.statuses).reduce(
-          (acc, status) => acc + status.length,
-          0
-        )
-        if (numDocuments > 0) {
-          setDocs(docs)
+        // Update docs state
+        if (docs && docs.statuses) {
+          const numDocuments = Object.values(docs.statuses).reduce(
+            (acc, status) => acc + status.length,
+            0
+          )
+          if (numDocuments > 0) {
+            setDocs(docs)
+          } else {
+            setDocs(null)
+          }
         } else {
           setDocs(null)
         }
-      } else {
-        setDocs(null)
       }
     } catch (err) {
-      toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
+      // Only show error if component is still mounted
+      if (isMountedRef.current) {
+        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
+      }
     }
   }, [setDocs, t])
 
@@ -375,10 +407,20 @@ export default function DocumentManager() {
 
   const scanDocuments = useCallback(async () => {
     try {
-      const { status } = await scanNewDocuments()
-      toast.message(status)
+      // Check if component is still mounted before starting the request
+      if (!isMountedRef.current) return;
+
+      const { status } = await scanNewDocuments();
+
+      // Check again if component is still mounted after the request completes
+      if (!isMountedRef.current) return;
+
+      toast.message(status);
     } catch (err) {
-      toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }))
+      // Only show error if component is still mounted
+      if (isMountedRef.current) {
+        toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
+      }
     }
   }, [t])
 
@@ -390,13 +432,21 @@ export default function DocumentManager() {
 
     const interval = setInterval(async () => {
       try {
-        await fetchDocuments()
+        // Only perform fetch if component is still mounted
+        if (isMountedRef.current) {
+          await fetchDocuments()
+        }
       } catch (err) {
-        toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
+        // Only show error if component is still mounted
+        if (isMountedRef.current) {
+          toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
+        }
       }
     }, 5000)
 
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+    }
   }, [health, fetchDocuments, t, currentTab])
 
   // Add dependency on sort state to re-render when sort changes
@@ -435,8 +485,8 @@ export default function DocumentManager() {
             </Button>
           </div>
           <div className="flex-1" />
-          <ClearDocumentsDialog />
-          <UploadDocumentsDialog />
+          <ClearDocumentsDialog onDocumentsCleared={fetchDocuments} />
+          <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
           <PipelineStatusDialog
             open={showPipelineStatus}
             onOpenChange={setShowPipelineStatus}
@@ -449,11 +499,14 @@ export default function DocumentManager() {
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
                 <FilterIcon className="h-4 w-4" />
-                <div className="flex gap-1">
+                <div className="flex gap-1" dir={i18n.dir()}>
                   <Button
                     size="sm"
                     variant={statusFilter === 'all' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('all')}
+                    className={cn(
+                      statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
                   </Button>
@@ -461,7 +514,10 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('processed')}
-                    className={documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500',
+                      statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
                   </Button>
@@ -469,7 +525,10 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('processing')}
-                    className={documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500',
+                      statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
                   </Button>
@@ -477,7 +536,10 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('pending')}
-                    className={documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500',
+                      statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
                   </Button>
@@ -485,15 +547,24 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('failed')}
-                    className={documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500',
+                      statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
                   </Button>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-500">{t('documentPanel.documentManager.fileNameLabel')}</span>
+                <label
+                  htmlFor="toggle-filename-btn"
+                  className="text-sm text-gray-500"
+                >
+                  {t('documentPanel.documentManager.fileNameLabel')}
+                </label>
                 <Button
+                  id="toggle-filename-btn"
                   variant="outline"
                   size="sm"
                   onClick={() => setShowFileName(!showFileName)}
