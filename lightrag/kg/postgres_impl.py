@@ -1876,9 +1876,9 @@ SQL_TEMPLATES = {
             FROM {prefix}DOC_CHUNKS
             WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
         )
-        SELECT id, content, file_path FROM
+        SELECT id, content, file_path, EXTRACT(EPOCH FROM create_time)::integer AS created_at FROM
             (
-                SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+                SELECT id, content, file_path, create_time, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
                 FROM {prefix}DOC_CHUNKS
                 where workspace=$1
                 AND id IN (SELECT chunk_id FROM relevant_chunks)

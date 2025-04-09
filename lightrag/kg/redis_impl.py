@@ -41,9 +41,9 @@ class RedisKVStorage(BaseKVStorage):
             socket_timeout=SOCKET_TIMEOUT,
             socket_connect_timeout=SOCKET_CONNECT_TIMEOUT,
         )
-        self._redis = Redis(connection_pool=self._pool)
+        self._redis = Redis(connection_pool=self._pool,max_connections=MAX_CONNECTIONS)
         logger.info(
-            f"Initialized Redis connection pool for {self.namespace} with max {MAX_CONNECTIONS} connections"
+            f"Initialized Redis connection pool for {self.namespace} with max {MAX_CONNECTIONS} connections on {redis_url}"
         )
 
     @asynccontextmanager
