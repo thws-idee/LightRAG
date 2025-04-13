@@ -21,9 +21,9 @@ config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 # Constants for Redis connection pool
-MAX_CONNECTIONS = 50
-SOCKET_TIMEOUT = 5.0
-SOCKET_CONNECT_TIMEOUT = 3.0
+MAX_CONNECTIONS = 80
+SOCKET_TIMEOUT = 15.0
+SOCKET_CONNECT_TIMEOUT = 10.0
 
 
 @final
@@ -118,13 +118,19 @@ class RedisKVStorage(BaseKVStorage):
             try:
                 pipe = redis.pipeline()
                 for k, v in data.items():
-                    pipe.set(f"{self.namespace}:{k}", json.dumps(v))
+                    try:
+                        json_dump = json.dumps(v)
+                    except json.JSONDecodeError:
+                        logger.error(f"JSON encode error for id {k}: {v}")
+                        json_dump = None
+                        continue
+                    pipe.set(f"{self.namespace}:{k}", json_dump)
                 await pipe.execute()
 
                 for k in data:
                     data[k]["_id"] = k
-            except json.JSONEncodeError as e:
-                logger.error(f"JSON encode error during upsert: {e}")
+            except:
+                logger.error(f"redis error upsert: {k}")
                 raise
 
     async def index_done_callback(self) -> None:
