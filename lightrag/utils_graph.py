@@ -241,6 +241,7 @@ async def aedit_entity(
                     keywords = edge_data.get("keywords", "")
                     source_id = edge_data.get("source_id", "")
                     weight = float(edge_data.get("weight", 1.0))
+                    file_path = edge_data.get("file_path", "")
 
                     # Create new content for embedding
                     content = f"{src}\t{tgt}\n{keywords}\n{description}"
@@ -258,6 +259,7 @@ async def aedit_entity(
                             "description": description,
                             "keywords": keywords,
                             "weight": weight,
+                            "file_path": file_path,
                         }
                     }
 
@@ -289,6 +291,7 @@ async def aedit_entity(
                     "source_id": source_id,
                     "description": description,
                     "entity_type": entity_type,
+                    "file_path": file_path,
                 }
             }
 

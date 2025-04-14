@@ -541,7 +541,7 @@ class Neo4JStorage(BaseGraphStorage):
         entity_type = properties["entity_type"]
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
-
+        entity_id = properties["entity_id"]
         try:
             async with self._driver.session(database=self._DATABASE) as session:
 
@@ -552,7 +552,7 @@ class Neo4JStorage(BaseGraphStorage):
                     RETURN n
                     """
                     result = await tx.run(query, entity_id=entity_id, properties=properties)
-                    logger.info(
+                    logger.debug(
                         f"Upserted node with entity_id '{entity_id}' and properties: {properties}"
                     )
                     await result.consume()  # Ensure result is fully consumed
