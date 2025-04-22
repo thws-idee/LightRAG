@@ -664,7 +664,8 @@ class PGVectorStorage(BaseVectorStorage):
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
         # Use parameterized document IDs (None means search across all documents)
-        sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
+        logger.info("Query: " + str((self.base_namespace).split('_')[-1]))
+        sql = SQL_TEMPLATES[str((self.base_namespace).split('_')[-1])].format(embedding_string=embedding_string,prefix=self.db.namespace_prefix)
         params = {
             "workspace": self.db.workspace,
             "doc_ids": ids,
@@ -2155,7 +2156,7 @@ SQL_TEMPLATES = {
     "relationships": """
     WITH relevant_chunks AS (
         SELECT id as chunk_id
-        FROM LIGHTRAG_DOC_CHUNKS
+        FROM {prefix}DOC_CHUNKS
         WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
     )
     SELECT source_id as src_id, target_id as tgt_id
