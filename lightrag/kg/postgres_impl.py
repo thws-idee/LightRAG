@@ -2551,7 +2551,7 @@ SQL_TEMPLATES = {
         )
         SELECT id, content, file_path, EXTRACT(EPOCH FROM create_time)::integer AS created_at, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM
             (
-                SELECT id, content, file_path, create_time, create_time, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+                SELECT id, content, file_path, create_time, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
                 FROM {prefix}DOC_CHUNKS
                 WHERE workspace=$1
                 AND id IN (SELECT chunk_id FROM relevant_chunks)

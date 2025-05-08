@@ -1158,16 +1158,16 @@ async def _get_vector_context(
         if not results:
             return [], [], []
 
-            valid_chunks = []
-            for chunk, result in zip(chunks, results):
-                if chunk is not None and "content" in chunk:
-                    # Merge chunk content and time metadata
-                    chunk_with_time = {
-                        "content": chunk["content"],
-                        "created_at": result.get("created_at", None),
-                        "file_path": result.get("file_path", "unknown_source"),
-                    }
-                    valid_chunks.append(chunk_with_time)
+        valid_chunks = []
+        for result in results:
+            if "content" in result:
+                # Directly use content from chunks_vdb.query result
+                chunk_with_time = {
+                    "content": result["content"],
+                    "created_at": result.get("created_at", None),
+                    "file_path": result.get("file_path", "unknown_source"),
+                }
+                valid_chunks.append(chunk_with_time)
 
         if not valid_chunks:
             return [], [], []
