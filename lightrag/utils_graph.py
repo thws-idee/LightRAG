@@ -505,6 +505,7 @@ async def acreate_entity(
                     "source_id": source_id,
                     "description": description,
                     "entity_type": entity_type,
+                    "file_path": entity_data.get("file_path", "manual_creation"),
                 }
             }
 
@@ -610,6 +611,7 @@ async def acreate_relation(
                     "description": description,
                     "keywords": keywords,
                     "weight": weight,
+                    "file_path": relation_data.get("file_path", "manual_creation"),
                 }
             }
 

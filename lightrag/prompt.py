@@ -12,6 +12,8 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"]
 
+PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
+
 PROMPTS["entity_extraction"] = """---Goal---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 Use {language} as output language.
@@ -197,7 +199,7 @@ PROMPTS["fail_response"] = (
 
 PROMPTS["rag_response"] = """---Role---
 
-You are a helpful assistant responding to user query about Knowledge Base provided below.
+You are a helpful assistant responding to user query about Knowledge Graph and Document Chunks provided in JSON format below.
 
 
 ---Goal---
@@ -213,7 +215,7 @@ When handling relationships with timestamps:
 ---Conversation History---
 {history}
 
----Knowledge Base---
+---Knowledge Graph and Document Chunks---
 {context_data}
 
 ---Response Rules---
@@ -222,9 +224,12 @@ When handling relationships with timestamps:
 - Use markdown formatting with appropriate section headings
 - Please respond in the same language as the user's question.
 - Ensure the response maintains continuity with the conversation history.
-- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path the creation date if available, in the following format: [KG/DC] file_path [created] created_at
+- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Document Chunks (DC), and include the file path the creation date if available, in the following format: [KG/DC] file_path [created] created_at
 - If you don't know the answer, just say so.
-- Do not make anything up. Do not include information not provided by the Knowledge Base."""
+- Do not make anything up. Do not include information not provided by the Knowledge Base.
+- Addtional user prompt: {user_prompt}
+
+Response:"""
 
 PROMPTS["keywords_extraction"] = """---Role---
 
@@ -293,10 +298,9 @@ Output:
 #############################""",
 ]
 
-
 PROMPTS["naive_rag_response"] = """---Role---
 
-You are a helpful assistant responding to user query about Document Chunks provided below.
+You are a helpful assistant responding to user query about Document Chunks provided provided in JSON format below.
 
 ---Goal---
 
@@ -311,7 +315,7 @@ When handling content with timestamps:
 ---Conversation History---
 {history}
 
----Document Chunks---
+---Document Chunks(DC)---
 {content_data}
 
 ---Response Rules---
@@ -320,11 +324,14 @@ When handling content with timestamps:
 - Use markdown formatting with appropriate section headings
 - Please respond in the same language as the user's question.
 - Ensure the response maintains continuity with the conversation history.
-- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path the creation date if available, in the following format: [KG/DC] file_path [created] created_at
+- List up to 5 most important reference sources at the end under "References" section. Clearly indicating each source from Document Chunks(DC), and include the file path the creation date if available, in the following format: [DC] file_path [created] created_at
 - If you don't know the answer, just say so.
-- Do not include information not provided by the Document Chunks."""
+- Do not include information not provided by the Document Chunks.
+- Addtional user prompt: {user_prompt}
 
+Response:"""
 
+# TODO: deprecated
 PROMPTS[
     "similarity_check"
 ] = """Please analyze the similarity between these two questions:
