@@ -91,7 +91,7 @@ python examples/lightrag_openai_demo.py
 
 如需流式响应示例的实现代码，请参阅 `examples/lightrag_openai_compatible_demo.py`。运行前，请确保根据需求修改示例代码中的LLM及嵌入模型配置。
 
-**注意1**：在运行demo程序的时候需要注意，不同的测试程序可能使用的是不同的embedding模型，更换不同的embeding模型的时候需要把清空数据目录（`./dickens`），否则层序执行会出错。如果你想保留LLM缓存，可以在清除数据目录是保留`kv_store_llm_response_cache.json`文件。
+**注意1**：在运行demo程序的时候需要注意，不同的测试程序可能使用的是不同的embedding模型，更换不同的embeding模型的时候需要把清空数据目录（`./dickens`），否则层序执行会出错。如果你想保留LLM缓存，可以在清除数据目录时保留`kv_store_llm_response_cache.json`文件。
 
 **注意2**：官方支持的示例代码仅为 `lightrag_openai_demo.py` 和 `lightrag_openai_compatible_demo.py` 两个文件。其他示例文件均为社区贡献内容，尚未经过完整测试与优化。
 
@@ -532,20 +532,20 @@ response = rag.query(
 )
 ```
 
-### 自定义用户提示词
+### 用户提示词 vs. 查询内容
 
-自定义用户提示词不影响查询内容，仅仅用于向LLM指示如何处理查询结果。以下是使用方法：
+当使用LightRAG查询内容的时候，不要把内容查询和与查询结果无关的输出加工写在一起。因为把两者混在一起会严重影响查询的效果。Query Param中的`user_prompt`就是为解决这一问题而设计的。`user_prompt`中的内容不参与RAG中的查询过程，它仅会在获得查询结果之后，与查询结果一起送给LLM，指导LLM如何处理查询结果。以下是使用方法：
 
 ```python
-# 创建查询参数
+# Create query parameters
 query_param = QueryParam(
-    mode = "hybrid",  # 或其他模式："local"、"global"、"hybrid"、"mix"和"naive"
-    user_prompt = "Please create the diagram using the Mermaid syntax"
+    mode = "hybrid",  # Other modes：local, global, hybrid, mix, naive
+    user_prompt = "如需画图使用mermaid格式，节点名称用英文或拼音，显示名称用中文",
 )
 
-# 查询和处理
+# Query and process
 response_default = rag.query(
-    "Please draw a character relationship diagram for Scrooge",
+    "请画出 Scrooge 的人物关系图谱",
     param=query_param
 )
 print(response_default)

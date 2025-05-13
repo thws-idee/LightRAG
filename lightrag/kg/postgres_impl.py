@@ -56,7 +56,7 @@ class PostgreSQLDB:
         self.database = config.get("database", "postgres")
         self.workspace = config.get("workspace", "default")
         self.namespace_prefix = config.get("namespace_prefix", "lightrag")
-        self.max = 12
+        self.max = int(config.get("max_connections", 12))
         self.increment = 1
         self.pool: Pool | None = None
 
@@ -319,6 +319,10 @@ class ClientManager:
                 "NAMESPACE_PREFIX",
                 config.get("postgres", "namespace_prefix", fallback="lightrag"),
             ),          
+            "max_connections": os.environ.get(
+                "POSTGRES_MAX_CONNECTIONS",
+                config.get("postgres", "max_connections", fallback=12),
+            ),
         }
 
     @classmethod
