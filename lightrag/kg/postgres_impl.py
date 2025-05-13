@@ -696,6 +696,7 @@ class PGVectorStorage(BaseVectorStorage):
 
         # Get current time with UTC timezone
         current_time = datetime.datetime.now(timezone.utc)
+        current_time = current_time.replace(tzinfo=None)
         list_data = [
             {
                 "__id__": k,
