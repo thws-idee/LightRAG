@@ -111,9 +111,9 @@ class PostgreSQLDB:
         """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC time"""
         # Tables and columns that need migration
         tables_to_migrate = {
-            "LIGHTRAG_VDB_ENTITY": ["create_time", "update_time"],
-            "LIGHTRAG_VDB_RELATION": ["create_time", "update_time"],
-            "LIGHTRAG_DOC_CHUNKS": ["create_time", "update_time"],
+            self.namespace_prefix+"VDB_ENTITY": ["create_time", "update_time"],
+            self.namespace_prefix+"VDB_RELATION": ["create_time", "update_time"],
+            self.namespace_prefix+"DOC_CHUNKS": ["create_time", "update_time"],
         }
 
         for table_name, columns in tables_to_migrate.items():
