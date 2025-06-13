@@ -1,9 +1,5 @@
 name: Upload LightRAG-hku Package
 
-on:
-  release:
-    types: [published]
-
 permissions:
   contents: read
 
