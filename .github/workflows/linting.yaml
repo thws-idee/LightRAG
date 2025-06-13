@@ -1,13 +1,5 @@
 name: Linting and Formatting
 
-on:
-    push:
-        branches:
-            - main
-    pull_request:
-        branches:
-            - main
-
 jobs:
     lint-and-format:
         runs-on: ubuntu-latest
