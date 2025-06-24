@@ -121,20 +121,20 @@ class PostgreSQLDB:
             column_info = await self.query(check_column_sql)
             if not column_info:
                 logger.info("Adding chunk_id column to LIGHTRAG_LLM_CACHE table")
-                add_column_sql = """
-                ALTER TABLE LIGHTRAG_LLM_CACHE
+                add_column_sql = f"""
+                ALTER TABLE '{self.namespace_prefix}'LLM_CACHE
                 ADD COLUMN chunk_id VARCHAR(255) NULL
                 """
                 await self.execute(add_column_sql)
                 logger.info(
-                    "Successfully added chunk_id column to LIGHTRAG_LLM_CACHE table"
+                    "Successfully added chunk_id column to LLM_CACHE table"
                 )
             else:
                 logger.info(
-                    "chunk_id column already exists in LIGHTRAG_LLM_CACHE table"
+                    "chunk_id column already exists in LLM_CACHE table"
                 )
         except Exception as e:
-            logger.warning(f"Failed to add chunk_id column to LIGHTRAG_LLM_CACHE: {e}")
+            logger.warning(f"Failed to add chunk_id column to LLM_CACHE: {e}")
 
     async def _migrate_timestamp_columns(self):
         """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC time"""
