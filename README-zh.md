@@ -1,6 +1,52 @@
-# LightRAG: Simple and Fast Retrieval-Augmented Generation
+<div align="center">
 
-<img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
+<div style="margin: 20px 0;">
+  <img src="./assets/logo.png" width="120" height="120" alt="LightRAG Logo" style="border-radius: 20px; box-shadow: 0 8px 32px rgba(0, 217, 255, 0.3);">
+</div>
+
+# 🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation
+
+<div align="center">
+    <a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</div>
+
+<div align="center">
+  <div style="width: 100%; height: 2px; margin: 20px 0; background: linear-gradient(90deg, transparent, #00d9ff, transparent);"></div>
+</div>
+
+<div align="center">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; padding: 25px; text-align: center;">
+    <p>
+      <a href='https://github.com/HKUDS/LightRAG'><img src='https://img.shields.io/badge/🔥项目-主页-00d9ff?style=for-the-badge&logo=github&logoColor=white&labelColor=1a1a2e'></a>
+      <a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/📄arXiv-2410.05779-ff6b6b?style=for-the-badge&logo=arxiv&logoColor=white&labelColor=1a1a2e'></a>
+      <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
+    </p>
+    <p>
+      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
+    </p>
+    <p>
+      <a href="https://discord.gg/yF2MmDJyGJ"><img src="https://img.shields.io/badge/💬Discord-社区-7289da?style=for-the-badge&logo=discord&logoColor=white&labelColor=1a1a2e"></a>
+      <a href="https://github.com/HKUDS/LightRAG/issues/285"><img src="https://img.shields.io/badge/💬微信群-交流-07c160?style=for-the-badge&logo=wechat&logoColor=white&labelColor=1a1a2e"></a>
+    </p>
+    <p>
+      <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
+      <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
+    </p>
+  </div>
+</div>
+
+</div>
+
+<div align="center" style="margin: 30px 0;">
+  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
+</div>
+
+<div align="center" style="margin: 30px 0;">
+    <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
+</div>
+
+---
 
 ## 🎉 新闻
 
@@ -44,6 +90,8 @@ LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知
 
 ```bash
 pip install "lightrag-hku[api]"
+cp env.example .env
+lightrag-server
 ```
 
 * 从源代码安装
@@ -54,6 +102,8 @@ cd LightRAG
 # 如有必要，创建Python虚拟环境
 # 以可编辑模式安装并支持API
 pip install -e ".[api]"
+cp env.example .env
+lightrag-server
 ```
 
 * 使用 Docker Compose 启动 LightRAG 服务器
@@ -84,6 +134,22 @@ pip install lightrag-hku
 ```
 
 ## 快速开始
+
+### LightRAG的LLM及配套技术栈要求
+
+LightRAG对大型语言模型（LLM）的能力要求远高于传统RAG，因为它需要LLM执行文档中的实体关系抽取任务。配置合适的Embedding和Reranker模型对提高查询表现也至关重要。
+
+- **LLM选型**：
+  - 推荐选用参数量至少为32B的LLM。
+  - 上下文长度至少为32KB，推荐达到64KB。
+- **Embedding模型**：
+  - 高性能的Embedding模型对RAG至关重要。
+  - 推荐使用主流的多语言Embedding模型，例如：BAAI/bge-m3 和 text-embedding-3-large。
+  - **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。
+- **Reranker模型配置**：
+  - 配置Reranker模型能够显著提升LightRAG的检索效果。
+  - 启用Reranker模型后，推荐将“mix模式”设为默认查询模式。
+  - 推荐选用主流的Reranker模型，例如：BAAI/bge-reranker-v2-m3 或 Jina 等服务商提供的模型。
 
 ### 使用LightRAG服务器
 
@@ -192,7 +258,6 @@ if __name__ == "__main__":
 | **tokenizer** | `Tokenizer` | 用于将文本转换为 tokens（数字）以及使用遵循 TokenizerInterface 协议的 .encode() 和 .decode() 函数将 tokens 转换回文本的函数。 如果您不指定，它将使用默认的 Tiktoken tokenizer。 | `TiktokenTokenizer` |
 | **tiktoken_model_name** | `str` | 如果您使用的是默认的 Tiktoken tokenizer，那么这是要使用的特定 Tiktoken 模型的名称。如果您提供自己的 tokenizer，则忽略此设置。 | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | 实体提取过程中的循环次数，附加历史消息 | `1` |
-| **entity_summary_to_max_tokens** | `int` | 每个实体摘要的最大令牌大小 | `500` |
 | **node_embedding_algorithm** | `str` | 节点嵌入算法（当前未使用） | `node2vec` |
 | **node2vec_params** | `dict` | 节点嵌入的参数 | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
 | **embedding_func** | `EmbeddingFunc` | 从文本生成嵌入向量的函数 | `openai_embed` |
@@ -200,7 +265,7 @@ if __name__ == "__main__":
 | **embedding_func_max_async** | `int` | 最大并发异步嵌入进程数 | `16` |
 | **llm_model_func** | `callable` | LLM生成的函数 | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | 用于生成的LLM模型名称 | `meta-llama/Llama-3.2-1B-Instruct` |
-| **llm_model_max_token_size** | `int` | LLM生成的最大令牌大小（影响实体关系摘要） | `32768`（默认值由环境变量MAX_TOKENS更改） |
+| **summary_max_tokens** | `int` | 生成实体关系摘要时送给LLM的最大令牌数 | `32000`（默认值由环境变量MAX_TOKENS更改） |
 | **llm_model_max_async** | `int` | 最大并发异步LLM进程数 | `4`（默认值由环境变量MAX_ASYNC更改） |
 | **llm_model_kwargs** | `dict` | LLM生成的附加参数 | |
 | **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
@@ -244,16 +309,19 @@ class QueryParam:
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "4000"))
-    """Maximum number of tokens allowed for each retrieved text chunk."""
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "10"))
+    """Number of text chunks to retrieve initially from vector search and keep after reranking.
+    If None, defaults to top_k value.
+    """
 
-    max_token_for_global_context: int = int(
-        os.getenv("MAX_TOKEN_RELATION_DESC", "4000")
-    )
-    """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
+    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "10000"))
+    """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_token_for_local_context: int = int(os.getenv("MAX_TOKEN_ENTITY_DESC", "4000"))
-    """Maximum number of tokens allocated for entity descriptions in local retrieval."""
+    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "10000"))
+    """Maximum number of tokens allocated for relationship context in unified token control system."""
+
+    max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "32000"))
+    """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     hl_keywords: list[str] = field(default_factory=list)
     """List of high-level keywords to prioritize in retrieval."""
@@ -281,6 +349,11 @@ class QueryParam:
     user_prompt: str | None = None
     """User-provided prompt for the query.
     If proivded, this will be use instead of the default vaulue from prompt template.
+    """
+
+    enable_rerank: bool = True
+    """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
+    Default is True to enable reranking when rerank model is available.
     """
 ```
 
@@ -711,6 +784,8 @@ async def initialize_rag():
 
 <details>
 <summary> <b>使用Faiss进行存储</b> </summary>
+在使用Faiss向量数据库之前必须手工安装`faiss-cpu`或`faiss-gpu`。
+
 
 - 安装所需依赖：
 
@@ -796,6 +871,18 @@ rag = LightRAG(
   >
 
 </details>
+
+### LightRAG实例间的数据隔离
+
+通过 workspace 参数可以不同实现不同LightRAG实例之间的存储数据隔离。LightRAG在初始化后workspace就已经确定，之后修改workspace是无效的。下面是不同类型的存储实现工作空间的方式：
+
+- **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** JsonKVStorage, JsonDocStatusStorage, NetworkXStorage, NanoVectorDBStorage, FaissVectorDBStorage。
+- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, QdrantVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
+- **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
+
+* **对于Neo4j图数据库，通过label来实现数据的逻辑隔离**：Neo4JStorage
+
+为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL非图存储的工作空间为`default`，PostgreSQL AGE图存储的工作空间为空，Neo4j图存储的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`。
 
 ## 编辑实体和关系
 
@@ -1108,40 +1195,100 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
    pip install raganything
    ```
 2. 处理多模态文档：
-   ```python
-   import asyncio
-   from raganything import RAGAnything
-   from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+    <details>
+    <summary> <b> RAGAnything 使用示例 </b></summary>
 
-   async def main():
-       # 使用LightRAG集成初始化RAGAnything
-       rag = RAGAnything(
-           working_dir="./rag_storage",
-           llm_model_func=lambda prompt, **kwargs: openai_complete_if_cache(
-               "gpt-4o-mini", prompt, api_key="your-api-key", **kwargs
-           ),
-           embedding_func=lambda texts: openai_embed(
-               texts, model="text-embedding-3-large", api_key="your-api-key"
-           ),
-           embedding_dim=3072,
-       )
+    ```python
+        import asyncio
+        from raganything import RAGAnything
+        from lightrag import LightRAG
+        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+        from lightrag.utils import EmbeddingFunc
+        import os
 
-       # 处理多模态文档
-       await rag.process_document_complete(
-           file_path="path/to/your/document.pdf",
-           output_dir="./output"
-       )
+        async def load_existing_lightrag():
+            # 首先，创建或加载现有的 LightRAG 实例
+            lightrag_working_dir = "./existing_lightrag_storage"
 
-       # 查询多模态内容
-       result = await rag.query_with_multimodal(
-           "图表中显示的主要发现是什么？",
-           mode="hybrid"
-       )
-       print(result)
+            # 检查是否存在之前的 LightRAG 实例
+            if os.path.exists(lightrag_working_dir) and os.listdir(lightrag_working_dir):
+                print("✅ Found existing LightRAG instance, loading...")
+            else:
+                print("❌ No existing LightRAG instance found, will create new one")
 
-   if __name__ == "__main__":
-       asyncio.run(main())
-   ```
+            # 使用您的配置创建/加载 LightRAG 实例
+            lightrag_instance = LightRAG(
+                working_dir=lightrag_working_dir,
+                llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
+                    "gpt-4o-mini",
+                    prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    api_key="your-api-key",
+                    **kwargs,
+                ),
+                embedding_func=EmbeddingFunc(
+                    embedding_dim=3072,
+                    max_token_size=8192,
+                    func=lambda texts: openai_embed(
+                        texts,
+                        model="text-embedding-3-large",
+                        api_key=api_key,
+                        base_url=base_url,
+                    ),
+                )
+            )
+
+            # 初始化存储（如果有现有数据，这将加载现有数据）
+            await lightrag_instance.initialize_storages()
+
+            # 现在使用现有的 LightRAG 实例初始化 RAGAnything
+            rag = RAGAnything(
+                lightrag=lightrag_instance,  # 传递现有的 LightRAG 实例
+                # 仅需要视觉模型用于多模态处理
+                vision_model_func=lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: openai_complete_if_cache(
+                    "gpt-4o",
+                    "",
+                    system_prompt=None,
+                    history_messages=[],
+                    messages=[
+                        {"role": "system", "content": system_prompt} if system_prompt else None,
+                        {"role": "user", "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                        ]} if image_data else {"role": "user", "content": prompt}
+                    ],
+                    api_key="your-api-key",
+                    **kwargs,
+                ) if image_data else openai_complete_if_cache(
+                    "gpt-4o-mini",
+                    prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    api_key="your-api-key",
+                    **kwargs,
+                )
+                # 注意：working_dir、llm_model_func、embedding_func 等都从 lightrag_instance 继承
+            )
+
+            # 查询现有的知识库
+            result = await rag.query_with_multimodal(
+                "What data has been processed in this LightRAG instance?",
+                mode="hybrid"
+            )
+            print("Query result:", result)
+
+            # 向现有的 LightRAG 实例添加新的多模态文档
+            await rag.process_document_complete(
+                file_path="path/to/new/multimodal_document.pdf",
+                output_dir="./output"
+            )
+
+        if __name__ == "__main__":
+            asyncio.run(load_existing_lightrag())
+    ```
+
+    </details>
 
 如需详细文档和高级用法，请参阅 [RAG-Anything 仓库](https://github.com/HKUDS/RAG-Anything)。
 

@@ -14,12 +14,14 @@ from functools import wraps
 from hashlib import md5
 from typing import Any, Protocol, Callable, TYPE_CHECKING, List
 import numpy as np
-from lightrag.prompt import PROMPTS
 from dotenv import load_dotenv
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
+    GRAPH_FIELD_SEP,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MAX_FILE_PATH_LENGTH,
 )
 
 
@@ -56,7 +58,7 @@ def get_env_value(
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
-    from lightrag.base import BaseKVStorage
+    from lightrag.base import BaseKVStorage, QueryParam
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -86,8 +88,10 @@ def verbose_debug(msg: str, *args, **kwargs):
             formatted_msg = msg
         # Then truncate the formatted message
         truncated_msg = (
-            formatted_msg[:100] + "..." if len(formatted_msg) > 100 else formatted_msg
+            formatted_msg[:150] + "..." if len(formatted_msg) > 150 else formatted_msg
         )
+        # Remove consecutive newlines
+        truncated_msg = re.sub(r"\n+", "\n", truncated_msg)
         logger.debug(truncated_msg, **kwargs)
 
 
@@ -278,11 +282,10 @@ def convert_response_to_json(response: str) -> dict[str, Any]:
         raise e from None
 
 
-def compute_args_hash(*args: Any, cache_type: str | None = None) -> str:
+def compute_args_hash(*args: Any) -> str:
     """Compute a hash for the given arguments.
     Args:
         *args: Arguments to hash
-        cache_type: Type of cache (e.g., 'keywords', 'query', 'extract')
     Returns:
         str: Hash string
     """
@@ -290,11 +293,38 @@ def compute_args_hash(*args: Any, cache_type: str | None = None) -> str:
 
     # Convert all arguments to strings and join them
     args_str = "".join([str(arg) for arg in args])
-    if cache_type:
-        args_str = f"{cache_type}:{args_str}"
 
     # Compute MD5 hash
     return hashlib.md5(args_str.encode()).hexdigest()
+
+
+def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
+    """Generate a flattened cache key in the format {mode}:{cache_type}:{hash}
+
+    Args:
+        mode: Cache mode (e.g., 'default', 'local', 'global')
+        cache_type: Type of cache (e.g., 'extract', 'query', 'keywords')
+        hash_value: Hash value from compute_args_hash
+
+    Returns:
+        str: Flattened cache key
+    """
+    return f"{mode}:{cache_type}:{hash_value}"
+
+
+def parse_cache_key(cache_key: str) -> tuple[str, str, str] | None:
+    """Parse a flattened cache key back into its components
+
+    Args:
+        cache_key: Flattened cache key in format {mode}:{cache_type}:{hash}
+
+    Returns:
+        tuple[str, str, str] | None: (mode, cache_type, hash) or None if invalid format
+    """
+    parts = cache_key.split(":", 2)
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    return None
 
 
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
@@ -752,162 +782,6 @@ def truncate_list_by_token_size(
     return list_data
 
 
-def process_combine_contexts(*context_lists):
-    """
-    Combine multiple context lists and remove duplicate content
-
-    Args:
-        *context_lists: Any number of context lists
-
-    Returns:
-        Combined context list with duplicates removed
-    """
-    seen_content = {}
-    combined_data = []
-
-    # Iterate through all input context lists
-    for context_list in context_lists:
-        if not context_list:  # Skip empty lists
-            continue
-        for item in context_list:
-            content_dict = {k: v for k, v in item.items() if k != "id"}
-            content_key = tuple(sorted(content_dict.items()))
-            if content_key not in seen_content:
-                seen_content[content_key] = item
-                combined_data.append(item)
-
-    # Reassign IDs
-    for i, item in enumerate(combined_data):
-        item["id"] = str(i + 1)
-
-    return combined_data
-
-
-async def get_best_cached_response(
-    hashing_kv,
-    current_embedding,
-    similarity_threshold=0.95,
-    mode="default",
-    use_llm_check=False,
-    llm_func=None,
-    original_prompt=None,
-    cache_type=None,
-) -> str | None:
-    logger.debug(
-        f"get_best_cached_response:  mode={mode} cache_type={cache_type} use_llm_check={use_llm_check}"
-    )
-    mode_cache = await hashing_kv.get_by_id(mode)
-    if not mode_cache:
-        return None
-
-    best_similarity = -1
-    best_response = None
-    best_prompt = None
-    best_cache_id = None
-
-    # Only iterate through cache entries for this mode
-    for cache_id, cache_data in mode_cache.items():
-        # Skip if cache_type doesn't match
-        if cache_type and cache_data.get("cache_type") != cache_type:
-            continue
-
-        # Check if cache data is valid
-        if cache_data["embedding"] is None:
-            continue
-
-        try:
-            # Safely convert cached embedding
-            cached_quantized = np.frombuffer(
-                bytes.fromhex(cache_data["embedding"]), dtype=np.uint8
-            ).reshape(cache_data["embedding_shape"])
-
-            # Ensure min_val and max_val are valid float values
-            embedding_min = cache_data.get("embedding_min")
-            embedding_max = cache_data.get("embedding_max")
-
-            if (
-                embedding_min is None
-                or embedding_max is None
-                or embedding_min >= embedding_max
-            ):
-                logger.warning(
-                    f"Invalid embedding min/max values: min={embedding_min}, max={embedding_max}"
-                )
-                continue
-
-            cached_embedding = dequantize_embedding(
-                cached_quantized,
-                embedding_min,
-                embedding_max,
-            )
-        except Exception as e:
-            logger.warning(f"Error processing cached embedding: {str(e)}")
-            continue
-
-        similarity = cosine_similarity(current_embedding, cached_embedding)
-        if similarity > best_similarity:
-            best_similarity = similarity
-            best_response = cache_data["return"]
-            best_prompt = cache_data["original_prompt"]
-            best_cache_id = cache_id
-
-    if best_similarity > similarity_threshold:
-        # If LLM check is enabled and all required parameters are provided
-        if (
-            use_llm_check
-            and llm_func
-            and original_prompt
-            and best_prompt
-            and best_response is not None
-        ):
-            compare_prompt = PROMPTS["similarity_check"].format(
-                original_prompt=original_prompt, cached_prompt=best_prompt
-            )
-
-            try:
-                llm_result = await llm_func(compare_prompt)
-                llm_result = llm_result.strip()
-                llm_similarity = float(llm_result)
-
-                # Replace vector similarity with LLM similarity score
-                best_similarity = llm_similarity
-                if best_similarity < similarity_threshold:
-                    log_data = {
-                        "event": "cache_rejected_by_llm",
-                        "type": cache_type,
-                        "mode": mode,
-                        "original_question": original_prompt[:100] + "..."
-                        if len(original_prompt) > 100
-                        else original_prompt,
-                        "cached_question": best_prompt[:100] + "..."
-                        if len(best_prompt) > 100
-                        else best_prompt,
-                        "similarity_score": round(best_similarity, 4),
-                        "threshold": similarity_threshold,
-                    }
-                    logger.debug(json.dumps(log_data, ensure_ascii=False))
-                    logger.info(f"Cache rejected by LLM(mode:{mode} tpye:{cache_type})")
-                    return None
-            except Exception as e:  # Catch all possible exceptions
-                logger.warning(f"LLM similarity check failed: {e}")
-                return None  # Return None directly when LLM check fails
-
-        prompt_display = (
-            best_prompt[:50] + "..." if len(best_prompt) > 50 else best_prompt
-        )
-        log_data = {
-            "event": "cache_hit",
-            "type": cache_type,
-            "mode": mode,
-            "similarity": round(best_similarity, 4),
-            "cache_id": best_cache_id,
-            "original_prompt": prompt_display,
-        }
-        logger.debug(json.dumps(log_data, ensure_ascii=False))
-        return best_response
-    return None
-
-
 def cosine_similarity(v1, v2):
     """Calculate cosine similarity between two vectors"""
     dot_product = np.dot(v1, v2)
@@ -957,7 +831,7 @@ async def handle_cache(
     mode="default",
     cache_type=None,
 ):
-    """Generic cache handling function"""
+    """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
         return None, None, None, None
 
@@ -968,15 +842,14 @@ async def handle_cache(
         if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
             return None, None, None, None
 
-    if exists_func(hashing_kv, "get_by_mode_and_id"):
-        mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
-    else:
-        mode_cache = await hashing_kv.get_by_id(mode) or {}
-    if args_hash in mode_cache:
-        logger.debug(f"Non-embedding cached hit(mode:{mode} type:{cache_type})")
-        return mode_cache[args_hash]["return"], None, None, None
+    # Use flattened cache key format: {mode}:{cache_type}:{hash}
+    flattened_key = generate_cache_key(mode, cache_type, args_hash)
+    cache_entry = await hashing_kv.get_by_id(flattened_key)
+    if cache_entry:
+        logger.debug(f"Flattened cache hit(key:{flattened_key})")
+        return cache_entry["return"], None, None, None
 
-    logger.debug(f"Non-embedding cached missed(mode:{mode} type:{cache_type})")
+    logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
     return None, None, None, None
 
 
@@ -994,7 +867,7 @@ class CacheData:
 
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
-    """Save data to cache, with improved handling for streaming responses and duplicate content.
+    """Save data to cache using flattened key structure.
 
     Args:
         hashing_kv: The key-value storage for caching
@@ -1009,26 +882,21 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         logger.debug("Streaming response detected, skipping cache")
         return
 
-    # Get existing cache data
-    if exists_func(hashing_kv, "get_by_mode_and_id"):
-        mode_cache = (
-            await hashing_kv.get_by_mode_and_id(cache_data.mode, cache_data.args_hash)
-            or {}
-        )
-    else:
-        mode_cache = await hashing_kv.get_by_id(cache_data.mode) or {}
+    # Use flattened cache key format: {mode}:{cache_type}:{hash}
+    flattened_key = generate_cache_key(
+        cache_data.mode, cache_data.cache_type, cache_data.args_hash
+    )
 
     # Check if we already have identical content cached
-    if cache_data.args_hash in mode_cache:
-        existing_content = mode_cache[cache_data.args_hash].get("return")
+    existing_cache = await hashing_kv.get_by_id(flattened_key)
+    if existing_cache:
+        existing_content = existing_cache.get("return")
         if existing_content == cache_data.content:
-            logger.info(
-                f"Cache content unchanged for {cache_data.args_hash}, skipping update"
-            )
+            logger.info(f"Cache content unchanged for {flattened_key}, skipping update")
             return
 
-    # Update cache with new content
-    mode_cache[cache_data.args_hash] = {
+    # Create cache entry with flattened structure
+    cache_entry = {
         "return": cache_data.content,
         "cache_type": cache_data.cache_type,
         "chunk_id": cache_data.chunk_id if cache_data.chunk_id is not None else None,
@@ -1043,10 +911,10 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         "original_prompt": cache_data.prompt,
     }
 
-    logger.info(f" == LLM cache == saving {cache_data.mode}: {cache_data.args_hash}")
+    logger.info(f" == LLM cache == saving: {flattened_key}")
 
-    # Only upsert if there's actual new content
-    await hashing_kv.upsert({cache_data.mode: mode_cache})
+    # Save using flattened key
+    await hashing_kv.upsert({flattened_key: cache_entry})
 
 
 def safe_unicode_decode(content):
@@ -1529,6 +1397,53 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
     return import_class
 
 
+async def update_chunk_cache_list(
+    chunk_id: str,
+    text_chunks_storage: "BaseKVStorage",
+    cache_keys: list[str],
+    cache_scenario: str = "batch_update",
+) -> None:
+    """Update chunk's llm_cache_list with the given cache keys
+
+    Args:
+        chunk_id: Chunk identifier
+        text_chunks_storage: Text chunks storage instance
+        cache_keys: List of cache keys to add to the list
+        cache_scenario: Description of the cache scenario for logging
+    """
+    if not cache_keys:
+        return
+
+    try:
+        chunk_data = await text_chunks_storage.get_by_id(chunk_id)
+        if chunk_data:
+            # Ensure llm_cache_list exists
+            if "llm_cache_list" not in chunk_data:
+                chunk_data["llm_cache_list"] = []
+
+            # Add cache keys to the list if not already present
+            existing_keys = set(chunk_data["llm_cache_list"])
+            new_keys = [key for key in cache_keys if key not in existing_keys]
+
+            if new_keys:
+                chunk_data["llm_cache_list"].extend(new_keys)
+
+                # Update the chunk in storage
+                await text_chunks_storage.upsert({chunk_id: chunk_data})
+                logger.debug(
+                    f"Updated chunk {chunk_id} with {len(new_keys)} cache keys ({cache_scenario})"
+                )
+    except Exception as e:
+        logger.warning(
+            f"Failed to update chunk {chunk_id} with cache references on {cache_scenario}: {e}"
+        )
+
+
+def remove_think_tags(text: str) -> str:
+    """Remove <think> tags from the text"""
+    return re.sub(r"^(<think>.*?</think>|<think>)", "", text, flags=re.DOTALL).strip()
+
+
 async def use_llm_func_with_cache(
     input_text: str,
     use_llm_func: callable,
@@ -1537,6 +1452,7 @@ async def use_llm_func_with_cache(
     history_messages: list[dict[str, str]] = None,
     cache_type: str = "extract",
     chunk_id: str | None = None,
+    cache_keys_collector: list = None,
 ) -> str:
     """Call LLM function with cache support
 
@@ -1551,6 +1467,8 @@ async def use_llm_func_with_cache(
         history_messages: History messages list
         cache_type: Type of cache
         chunk_id: Chunk identifier to store in cache
+        text_chunks_storage: Text chunks storage to update llm_cache_list
+        cache_keys_collector: Optional list to collect cache keys for batch processing
 
     Returns:
         LLM response text
@@ -1563,6 +1481,9 @@ async def use_llm_func_with_cache(
             _prompt = input_text
 
         arg_hash = compute_args_hash(_prompt)
+        # Generate cache key for this LLM call
+        cache_key = generate_cache_key("default", cache_type, arg_hash)
+
         cached_return, _1, _2, _3 = await handle_cache(
             llm_response_cache,
             arg_hash,
@@ -1573,6 +1494,11 @@ async def use_llm_func_with_cache(
         if cached_return:
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
+
+            # Add cache key to collector if provided
+            if cache_keys_collector is not None:
+                cache_keys_collector.append(cache_key)
+
             return cached_return
         statistic_data["llm_call"] += 1
 
@@ -1584,6 +1510,7 @@ async def use_llm_func_with_cache(
             kwargs["max_tokens"] = max_tokens
 
         res: str = await use_llm_func(input_text, **kwargs)
+        res = remove_think_tags(res)
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             await save_to_cache(
@@ -1597,6 +1524,10 @@ async def use_llm_func_with_cache(
                 ),
             )
 
+            # Add cache key to collector if provided
+            if cache_keys_collector is not None:
+                cache_keys_collector.append(cache_key)
+
         return res
 
     # When cache is disabled, directly call LLM
@@ -1606,8 +1537,9 @@ async def use_llm_func_with_cache(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    logger.info(f"Call LLM function with query text lenght: {len(input_text)}")
-    return await use_llm_func(input_text, **kwargs)
+    logger.info(f"Call LLM function with query text length: {len(input_text)}")
+    res = await use_llm_func(input_text, **kwargs)
+    return remove_think_tags(res)
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
@@ -1713,6 +1645,86 @@ def check_storage_env_vars(storage_name: str) -> None:
         )
 
 
+def linear_gradient_weighted_polling(
+    entities_or_relations: list[dict],
+    max_related_chunks: int,
+    min_related_chunks: int = 1,
+) -> list[str]:
+    """
+    Linear gradient weighted polling algorithm for text chunk selection.
+
+    This algorithm ensures that entities/relations with higher importance get more text chunks,
+    forming a linear decreasing allocation pattern.
+
+    Args:
+        entities_or_relations: List of entities or relations sorted by importance (high to low)
+        max_related_chunks: Expected number of text chunks for the highest importance entity/relation
+        min_related_chunks: Expected number of text chunks for the lowest importance entity/relation
+
+    Returns:
+        List of selected text chunk IDs
+    """
+    if not entities_or_relations:
+        return []
+
+    n = len(entities_or_relations)
+    if n == 1:
+        # Only one entity/relation, return its first max_related_chunks text chunks
+        entity_chunks = entities_or_relations[0].get("sorted_chunks", [])
+        return entity_chunks[:max_related_chunks]
+
+    # Calculate expected text chunk count for each position (linear decrease)
+    expected_counts = []
+    for i in range(n):
+        # Linear interpolation: from max_related_chunks to min_related_chunks
+        ratio = i / (n - 1) if n > 1 else 0
+        expected = max_related_chunks - ratio * (
+            max_related_chunks - min_related_chunks
+        )
+        expected_counts.append(int(round(expected)))
+
+    # First round allocation: allocate by expected values
+    selected_chunks = []
+    used_counts = []  # Track number of chunks used by each entity
+    total_remaining = 0  # Accumulate remaining quotas
+
+    for i, entity_rel in enumerate(entities_or_relations):
+        entity_chunks = entity_rel.get("sorted_chunks", [])
+        expected = expected_counts[i]
+
+        # Actual allocatable count
+        actual = min(expected, len(entity_chunks))
+        selected_chunks.extend(entity_chunks[:actual])
+        used_counts.append(actual)
+
+        # Accumulate remaining quota
+        remaining = expected - actual
+        if remaining > 0:
+            total_remaining += remaining
+
+    # Second round allocation: multi-round scanning to allocate remaining quotas
+    for _ in range(total_remaining):
+        allocated = False
+
+        # Scan entities one by one, allocate one chunk when finding unused chunks
+        for i, entity_rel in enumerate(entities_or_relations):
+            entity_chunks = entity_rel.get("sorted_chunks", [])
+
+            # Check if there are still unused chunks
+            if used_counts[i] < len(entity_chunks):
+                # Allocate one chunk
+                selected_chunks.append(entity_chunks[used_counts[i]])
+                used_counts[i] += 1
+                allocated = True
+                break
+
+        # If no chunks were allocated in this round, all entities are exhausted
+        if not allocated:
+            break
+
+    return selected_chunks
+
+
 class TokenTracker:
     """Track token usage for LLM calls."""
 
@@ -1768,3 +1780,203 @@ class TokenTracker:
             f"Completion tokens: {usage['completion_tokens']}, "
             f"Total tokens: {usage['total_tokens']}"
         )
+
+
+async def apply_rerank_if_enabled(
+    query: str,
+    retrieved_docs: list[dict],
+    global_config: dict,
+    enable_rerank: bool = True,
+    top_n: int = None,
+) -> list[dict]:
+    """
+    Apply reranking to retrieved documents if rerank is enabled.
+
+    Args:
+        query: The search query
+        retrieved_docs: List of retrieved documents
+        global_config: Global configuration containing rerank settings
+        enable_rerank: Whether to enable reranking from query parameter
+        top_n: Number of top documents to return after reranking
+
+    Returns:
+        Reranked documents if rerank is enabled, otherwise original documents
+    """
+    if not enable_rerank or not retrieved_docs:
+        return retrieved_docs
+
+    rerank_func = global_config.get("rerank_model_func")
+    if not rerank_func:
+        logger.warning(
+            "Rerank is enabled but no rerank model is configured. Please set up a rerank model or set enable_rerank=False in query parameters."
+        )
+        return retrieved_docs
+
+    try:
+        # Apply reranking - let rerank_model_func handle top_k internally
+        reranked_docs = await rerank_func(
+            query=query,
+            documents=retrieved_docs,
+            top_n=top_n,
+        )
+        if reranked_docs and len(reranked_docs) > 0:
+            if len(reranked_docs) > top_n:
+                reranked_docs = reranked_docs[:top_n]
+            logger.info(f"Successfully reranked: {len(retrieved_docs)} chunks")
+            return reranked_docs
+        else:
+            logger.warning("Rerank returned empty results, using original chunks")
+            return retrieved_docs
+
+    except Exception as e:
+        logger.error(f"Error during reranking: {e}, using original chunks")
+        return retrieved_docs
+
+
+async def process_chunks_unified(
+    query: str,
+    unique_chunks: list[dict],
+    query_param: "QueryParam",
+    global_config: dict,
+    source_type: str = "mixed",
+    chunk_token_limit: int = None,  # Add parameter for dynamic token limit
+) -> list[dict]:
+    """
+    Unified processing for text chunks: deduplication, chunk_top_k limiting, reranking, and token truncation.
+
+    Args:
+        query: Search query for reranking
+        chunks: List of text chunks to process
+        query_param: Query parameters containing configuration
+        global_config: Global configuration dictionary
+        source_type: Source type for logging ("vector", "entity", "relationship", "mixed")
+        chunk_token_limit: Dynamic token limit for chunks (if None, uses default)
+
+    Returns:
+        Processed and filtered list of text chunks
+    """
+    if not unique_chunks:
+        return []
+
+    origin_count = len(unique_chunks)
+
+    # 1. Apply reranking if enabled and query is provided
+    if query_param.enable_rerank and query and unique_chunks:
+        rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
+        unique_chunks = await apply_rerank_if_enabled(
+            query=query,
+            retrieved_docs=unique_chunks,
+            global_config=global_config,
+            enable_rerank=query_param.enable_rerank,
+            top_n=rerank_top_k,
+        )
+
+    # 2. Filter by minimum rerank score if reranking is enabled
+    if query_param.enable_rerank and unique_chunks:
+        min_rerank_score = global_config.get("min_rerank_score", 0.5)
+        if min_rerank_score > 0.0:
+            original_count = len(unique_chunks)
+
+            # Filter chunks with score below threshold
+            filtered_chunks = []
+            for chunk in unique_chunks:
+                rerank_score = chunk.get(
+                    "rerank_score", 1.0
+                )  # Default to 1.0 if no score
+                if rerank_score >= min_rerank_score:
+                    filtered_chunks.append(chunk)
+
+            unique_chunks = filtered_chunks
+            filtered_count = original_count - len(unique_chunks)
+
+            if filtered_count > 0:
+                logger.info(
+                    f"Rerank filtering: {len(unique_chunks)} chunks remained (min rerank score: {min_rerank_score})"
+                )
+            if not unique_chunks:
+                return []
+
+    # 3. Apply chunk_top_k limiting if specified
+    if query_param.chunk_top_k is not None and query_param.chunk_top_k > 0:
+        if len(unique_chunks) > query_param.chunk_top_k:
+            unique_chunks = unique_chunks[: query_param.chunk_top_k]
+        logger.debug(
+            f"Kept chunk_top-k: {len(unique_chunks)} chunks (deduplicated original: {origin_count})"
+        )
+
+    # 4. Token-based final truncation
+    tokenizer = global_config.get("tokenizer")
+    if tokenizer and unique_chunks:
+        # Set default chunk_token_limit if not provided
+        if chunk_token_limit is None:
+            # Get default from query_param or global_config
+            chunk_token_limit = getattr(
+                query_param,
+                "max_total_tokens",
+                global_config.get("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS),
+            )
+
+        original_count = len(unique_chunks)
+        unique_chunks = truncate_list_by_token_size(
+            unique_chunks,
+            key=lambda x: x.get("content", ""),
+            max_token_size=chunk_token_limit,
+            tokenizer=tokenizer,
+        )
+        logger.debug(
+            f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
+            f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
+        )
+
+    return unique_chunks
+
+
+def build_file_path(already_file_paths, data_list, target):
+    """Build file path string with length limit and deduplication
+
+    Args:
+        already_file_paths: List of existing file paths
+        data_list: List of data items containing file_path
+        target: Target name for logging warnings
+
+    Returns:
+        str: Combined file paths separated by GRAPH_FIELD_SEP
+    """
+    # set: deduplication
+    file_paths_set = {fp for fp in already_file_paths if fp}
+
+    # string: filter empty value and keep file order in already_file_paths
+    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+    # ignored file_paths
+    file_paths_ignore = ""
+    # add file_paths
+    for dp in data_list:
+        cur_file_path = dp.get("file_path")
+        # empty
+        if not cur_file_path:
+            continue
+
+        # skip duplicate item
+        if cur_file_path in file_paths_set:
+            continue
+        # add
+        file_paths_set.add(cur_file_path)
+
+        # check the length
+        if (
+            len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path)
+            < DEFAULT_MAX_FILE_PATH_LENGTH
+        ):
+            # append
+            file_paths += (
+                GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
+            )
+        else:
+            # ignore
+            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
+
+    if file_paths_ignore:
+        logger.warning(
+            f"Length of file_path exceeds {target}, ignoring new file: {file_paths_ignore}"
+        )
+    return file_paths

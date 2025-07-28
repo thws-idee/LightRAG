@@ -54,8 +54,6 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-4o
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-### Max tokens sent to LLM (less than model context size)
-MAX_TOKENS=32768
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -71,8 +69,8 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-### Max tokens sent to LLM (based on your Ollama Server capacity)
-MAX_TOKENS=8192
+###  Ollama Server context length
+OLLAMA_NUM_CTX=8192
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -94,50 +92,25 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
-The `.env` file **must be placed in the startup directory**.
 
-Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
+When starting LightRAG, the current working directory must contain the `.env` configuration file. **It is intentionally designed that the `.env` file must be placed in the startup directory**. The purpose of this is to allow users to launch multiple LightRAG instances simultaneously and configure different `.env` files for different instances. **After modifying the `.env` file, you need to reopen the terminal for the new settings to take effect.** This is because each time LightRAG Server starts, it loads the environment variables from the `.env` file into the system environment variables, and system environment variables have higher precedence.
 
-Here are some commonly used startup parameters:
+During startup, configurations in the `.env` file can be overridden by command-line parameters. Common command-line parameters include:
 
 - `--host`: Server listening address (default: 0.0.0.0)
 - `--port`: Server listening port (default: 9621)
 - `--timeout`: LLM request timeout (default: 150 seconds)
-- `--log-level`: Logging level (default: INFO)
-- `--input-dir`: Specifying the directory to scan for documents (default: ./inputs)
-
-> - The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously, allowing different .env files for different instances.
-> - **After changing the .env file, you need to open a new terminal to make  the new settings take effect.** This because the LightRAG Server will load the environment variables from .env into the system environment variables each time it starts, and LightRAG Server will prioritize the settings in the system environment variables.
+- `--log-level`: Log level (default: INFO)
+- `--working-dir`: Database persistence directory (default: ./rag_storage)
+- `--input-dir`: Directory for uploaded files (default: ./inputs)
+- `--workspace`: Workspace name, used to logically isolate data between multiple LightRAG instances (default: empty)
 
 ### Launching LightRAG Server with Docker
 
-* Clone the repository:
-```shell
-git clone https://github.com/HKUDS/LightRAG.git
-cd LightRAG
-```
-
 * Prepare the .env file:
-    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
+    Create a personalized .env file by copying the sample file [`env.example`](env.example). Configure the LLM and embedding parameters according to your requirements.
 
-* Start the LightRAG Server using the following commands:
-```shell
-docker compose up
-# Use --build if you have pulled a new version
-docker compose up --build
-```
-
-### Deploying LightRAG Server with docker without cloneing the repository
-
-* Create a working folder for LightRAG Server:
-
-```shell
-mkdir lightrag
-cd lightrag
-```
-
-* Create a docker compose file named docker-compose.yml:
-
+* Create a file named `docker-compose.yml`:
 
 ```yaml
 services:
@@ -157,25 +130,58 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 ```
-* Prepare the .env file:
-    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
 
-* Start the LightRAG Server using the following commands:
+* Start the LightRAG Server with the following command:
+
 ```shell
 docker compose up
+# If you want the program to run in the background after startup, add the -d parameter at the end of the command.
 ```
 
-> Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+> You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### Auto scan on startup
 
-When starting any of the servers with the `--auto-scan-at-startup` parameter, the system will automatically:
+When starting the LightRAG Server with the `--auto-scan-at-startup` parameter, the system will automatically:
 
 1. Scan for new files in the input directory
 2. Index new documents that aren't already in the database
 3. Make all content immediately available for RAG queries
 
+This offers an efficient method for deploying ad-hoc RAG processes.
+
 > The `--input-dir` parameter specifies the input directory to scan. You can trigger the input directory scan from the Web UI.
+
+### Starting Multiple LightRAG Instances
+
+There are two ways to start multiple LightRAG instances. The first way is to configure a completely independent working environment for each instance. This requires creating a separate working directory for each instance and placing a dedicated `.env` configuration file in that directory. The server listening ports in the configuration files of different instances cannot be the same. Then, you can start the service by running `lightrag-server` in the working directory.
+
+The second way is for all instances to share the same set of `.env` configuration files, and then use command-line arguments to specify different server listening ports and workspaces for each instance. You can start multiple LightRAG instances in the same working directory with different command-line arguments. For example:
+
+```
+# Start instance 1
+lightrag-server --port 9621 --workspace space1
+
+# Start instance 2
+lightrag-server --port 9622 --workspace space2
+```
+
+The purpose of a workspace is to achieve data isolation between different instances. Therefore, the `workspace` parameter must be different for different instances; otherwise, it will lead to data confusion and corruption.
+
+When launching multiple LightRAG instances via Docker Compose, simply specify unique `WORKSPACE` and `PORT` environment variables for each container within your `docker-compose.yml`. Even if all instances share a common `.env` file, the container-specific environment variables defined in Compose will take precedence, ensuring independent configurations for each instance.
+
+### Data Isolation Between LightRAG Instances
+
+Configuring an independent working directory and a dedicated `.env` configuration file for each instance can generally ensure that locally persisted files in the in-memory database are saved in their respective working directories, achieving data isolation. By default, LightRAG uses all in-memory databases, and this method of data isolation is sufficient. However, if you are using an external database, and different instances access the same database instance, you need to use workspaces to achieve data isolation; otherwise, the data of different instances will conflict and be destroyed.
+
+The command-line `workspace` argument and the `WORKSPACE` environment variable in the `.env` file can both be used to specify the workspace name for the current instance, with the command-line argument having higher priority. Here is how workspaces are implemented for different types of storage:
+
+- **For local file-based databases, data isolation is achieved through workspace subdirectories:** `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`.
+- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `QdrantVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
+- **For graph databases, logical data isolation is achieved through labels:** `Neo4JStorage`, `MemgraphStorage`
+
+To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`.
 
 ### Multiple workers for Gunicorn + Uvicorn
 
@@ -388,6 +394,7 @@ MongoKVStorage   MongoDB
 NetworkXStorage      NetworkX (default)
 Neo4JStorage         Neo4J
 PGGraphStorage       PostgreSQL with AGE plugin
+MemgraphStorage.     Memgraph
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -411,6 +418,8 @@ JsonDocStatusStorage        JsonFile (default)
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
 ```
+Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts.
+
 
 ### How to Select Storage Implementation
 
@@ -465,7 +474,6 @@ MAX_PARALLEL_INSERT=2
 TIMEOUT=200
 TEMPERATURE=0.0
 MAX_ASYNC=4
-MAX_TOKENS=32768
 
 LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
@@ -493,12 +501,12 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 
 The document processing pipeline in LightRAG is somewhat complex and is divided into two primary stages: the Extraction stage (entity and relationship extraction) and the Merging stage (entity and relationship merging). There are two key parameters that control pipeline concurrency: the maximum number of files processed in parallel (MAX_PARALLEL_INSERT) and the maximum number of concurrent LLM requests (MAX_ASYNC). The workflow is described as follows:
 
-1. MAX_PARALLEL_INSERT controls the number of files processed in parallel during the extraction stage.
-2. MAX_ASYNC limits the total number of concurrent LLM requests in the system, including those for querying, extraction, and merging. LLM requests have different priorities: query operations have the highest priority, followed by merging, and then extraction.
+1. MAX_ASYNC limits the total number of concurrent LLM requests in the system, including those for querying, extraction, and merging. LLM requests have different priorities: query operations have the highest priority, followed by merging, and then extraction.
+2. MAX_PARALLEL_INSERT controls the number of files processed in parallel during the extraction stage. For optimal performance, MAX_PARALLEL_INSERT is recommended to be set between 2 and 10, typically MAX_ASYNC/3. Setting this value too high can increase the likelihood of naming conflicts among entities and relationships across different documents during the merge phase, thereby reducing its overall efficiency.
 3. Within a single file, entity and relationship extractions from different text blocks are processed concurrently, with the degree of concurrency set by MAX_ASYNC. Only after MAX_ASYNC text blocks are processed will the system proceed to the next batch within the same file.
-4. The merging stage begins only after all text blocks in a file have completed entity and relationship extraction. When a file enters the merging stage, the pipeline allows the next file to begin extraction.
-5. Since the extraction stage is generally faster than merging, the actual number of files being processed concurrently may exceed MAX_PARALLEL_INSERT, as this parameter only controls parallelism during the extraction stage.
-6. To prevent race conditions, the merging stage does not support concurrent processing of multiple files; only one file can be merged at a time, while other files must wait in queue.
+4. When a file completes entity and relationship extraction, it enters the entity and relationship merging stage. This stage also processes multiple entities and relationships concurrently, with the concurrency level also controlled by `MAX_ASYNC`.
+5. LLM requests for the merging stage are prioritized over the extraction stage to ensure that files in the merging phase are processed quickly and their results are promptly updated in the vector database.
+6. To prevent race conditions, the merging stage avoids concurrent processing of the same entity or relationship. When multiple files involve the same entity or relationship that needs to be merged, they are processed serially.
 7. Each file is treated as an atomic processing unit in the pipeline. A file is marked as successfully processed only after all its text blocks have completed extraction and merging. If any error occurs during processing, the entire file is marked as failed and must be reprocessed.
 8. When a file is reprocessed due to errors, previously processed text blocks can be quickly skipped thanks to LLM caching. Although LLM cache is also utilized during the merging stage, inconsistencies in merging order may limit its effectiveness in this stage.
 9. If an error occurs during extraction, the system does not retain any intermediate results. If an error occurs during merging, already merged entities and relationships might be preserved; when the same file is reprocessed, re-extracted entities and relationships will be merged with the existing ones, without impacting the query results.

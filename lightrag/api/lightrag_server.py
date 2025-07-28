@@ -52,6 +52,7 @@ from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_pipeline_status_lock,
     initialize_pipeline_status,
+    cleanup_keyed_lock,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
@@ -88,7 +89,13 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
+    if args.embedding_binding not in [
+        "lollms",
+        "ollama",
+        "openai",
+        "azure_openai",
+        "jina",
+    ]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -112,8 +119,8 @@ def create_app(args):
     # Check if API key is provided either through env var or args
     api_key = os.getenv("LIGHTRAG_API_KEY") or args.key
 
-    # Initialize document manager
-    doc_manager = DocumentManager(args.input_dir)
+    # Initialize document manager with workspace support for data isolation
+    doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -212,6 +219,8 @@ def create_app(args):
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.openai import openai_complete_if_cache
         from lightrag.llm.ollama import ollama_embed
+    if args.embedding_binding == "jina":
+        from lightrag.llm.jina import jina_embed
 
     async def openai_alike_model_complete(
         prompt,
@@ -283,6 +292,13 @@ def create_app(args):
             api_key=args.embedding_binding_api_key,
         )
         if args.embedding_binding == "azure_openai"
+        else jina_embed(
+            texts,
+            dimensions=args.embedding_dim,
+            base_url=args.embedding_binding_host,
+            api_key=args.embedding_binding_api_key,
+        )
+        if args.embedding_binding == "jina"
         else openai_embed(
             texts,
             model=args.embedding_model,
@@ -291,10 +307,46 @@ def create_app(args):
         ),
     )
 
+    # Configure rerank function if model and API are configured
+    rerank_model_func = None
+    if args.rerank_binding_api_key and args.rerank_binding_host:
+        from lightrag.rerank import custom_rerank
+
+        async def server_rerank_func(
+            query: str, documents: list, top_n: int = None, **kwargs
+        ):
+            """Server rerank function with configuration from environment variables"""
+            return await custom_rerank(
+                query=query,
+                documents=documents,
+                model=args.rerank_model,
+                base_url=args.rerank_binding_host,
+                api_key=args.rerank_binding_api_key,
+                top_n=top_n,
+                **kwargs,
+            )
+
+        rerank_model_func = server_rerank_func
+        logger.info(
+            f"Rerank model configured: {args.rerank_model} (can be enabled per query)"
+        )
+    else:
+        logger.info(
+            "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
+        )
+
+    # Create ollama_server_infos from command line arguments
+    from lightrag.api.config import OllamaServerInfos
+
+    ollama_server_infos = OllamaServerInfos(
+        name=args.simulated_model_name, tag=args.simulated_model_tag
+    )
+
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
             working_dir=args.working_dir,
+            workspace=args.workspace,
             llm_model_func=lollms_model_complete
             if args.llm_binding == "lollms"
             else ollama_model_complete
@@ -302,13 +354,13 @@ def create_app(args):
             else openai_alike_model_complete,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
+            summary_max_tokens=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
                 "host": args.llm_binding_host,
                 "timeout": args.timeout,
-                "options": {"num_ctx": args.max_tokens},
+                "options": {"num_ctx": args.ollama_num_ctx},
                 "api_key": args.llm_binding_api_key,
             }
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
@@ -323,13 +375,17 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
+            rerank_model_func=rerank_model_func,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
+            max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
+            ollama_server_infos=ollama_server_infos,
         )
     else:  # azure_openai
         rag = LightRAG(
             working_dir=args.working_dir,
+            workspace=args.workspace,
             llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
@@ -338,7 +394,7 @@ def create_app(args):
             },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
+            summary_max_tokens=args.max_tokens,
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
@@ -349,9 +405,12 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
+            rerank_model_func=rerank_model_func,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
+            max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
+            ollama_server_infos=ollama_server_infos,
         )
 
     # Add routes
@@ -452,6 +511,9 @@ def create_app(args):
             else:
                 auth_mode = "enabled"
 
+            # Cleanup expired keyed locks and get status
+            keyed_lock_info = cleanup_keyed_lock()
+
             return {
                 "status": "healthy",
                 "working_directory": str(args.working_dir),
@@ -472,9 +534,30 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
+                    "workspace": args.workspace,
+                    "max_graph_nodes": args.max_graph_nodes,
+                    # Rerank configuration (based on whether rerank model is configured)
+                    "enable_rerank": rerank_model_func is not None,
+                    "rerank_model": args.rerank_model
+                    if rerank_model_func is not None
+                    else None,
+                    "rerank_binding_host": args.rerank_binding_host
+                    if rerank_model_func is not None
+                    else None,
+                    # Environment variable status (requested configuration)
+                    "summary_language": args.summary_language,
+                    "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
+                    "max_parallel_insert": args.max_parallel_insert,
+                    "cosine_threshold": args.cosine_threshold,
+                    "min_rerank_score": args.min_rerank_score,
+                    "related_chunk_number": args.related_chunk_number,
+                    "max_async": args.max_async,
+                    "embedding_func_max_async": args.embedding_func_max_async,
+                    "embedding_batch_num": args.embedding_batch_num,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
+                "keyed_locks": keyed_lock_info,
                 "core_version": core_version,
                 "api_version": __api_version__,
                 "webui_title": webui_title,

@@ -62,6 +62,51 @@ router = APIRouter(
 temp_prefix = "__tmp__"
 
 
+def sanitize_filename(filename: str, input_dir: Path) -> str:
+    """
+    Sanitize uploaded filename to prevent Path Traversal attacks.
+
+    Args:
+        filename: The original filename from the upload
+        input_dir: The target input directory
+
+    Returns:
+        str: Sanitized filename that is safe to use
+
+    Raises:
+        HTTPException: If the filename is unsafe or invalid
+    """
+    # Basic validation
+    if not filename or not filename.strip():
+        raise HTTPException(status_code=400, detail="Filename cannot be empty")
+
+    # Remove path separators and traversal sequences
+    clean_name = filename.replace("/", "").replace("\\", "")
+    clean_name = clean_name.replace("..", "")
+
+    # Remove control characters and null bytes
+    clean_name = "".join(c for c in clean_name if ord(c) >= 32 and c != "\x7f")
+
+    # Remove leading/trailing whitespace and dots
+    clean_name = clean_name.strip().strip(".")
+
+    # Check if anything is left after sanitization
+    if not clean_name:
+        raise HTTPException(
+            status_code=400, detail="Invalid filename after sanitization"
+        )
+
+    # Verify the final path stays within the input directory
+    try:
+        final_path = (input_dir / clean_name).resolve()
+        if not final_path.is_relative_to(input_dir.resolve()):
+            raise HTTPException(status_code=400, detail="Unsafe filename detected")
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    return clean_name
+
+
 class ScanResponse(BaseModel):
     """Response model for document scanning operation
 
@@ -430,6 +475,7 @@ class DocumentManager:
     def __init__(
         self,
         input_dir: str,
+        workspace: str = "",  # New parameter for workspace isolation
         supported_extensions: tuple = (
             ".txt",
             ".md",
@@ -470,9 +516,18 @@ class DocumentManager:
             ".less",  # LESS CSS
         ),
     ):
-        self.input_dir = Path(input_dir)
+        # Store the base input directory and workspace
+        self.base_input_dir = Path(input_dir)
+        self.workspace = workspace
         self.supported_extensions = supported_extensions
         self.indexed_files = set()
+
+        # Create workspace-specific input directory
+        # If workspace is provided, create a subdirectory for data isolation
+        if workspace:
+            self.input_dir = self.base_input_dir / workspace
+        else:
+            self.input_dir = self.base_input_dir
 
         # Create input directory if it doesn't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
@@ -669,6 +724,12 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
 
         # Insert into the RAG queue
         if content:
+            # Check if content contains only whitespace characters
+            if not content.strip():
+                logger.warning(
+                    f"File contains only whitespace characters. file_paths={file_path.name}"
+                )
+
             await rag.apipeline_enqueue_documents(content, file_paths=file_path.name)
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
@@ -783,7 +844,7 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
-        logger.info(f"Found {total_files} new files to index.")
+        logger.info(f"Found {total_files} files to index.")
 
         if not new_files:
             return
@@ -816,8 +877,13 @@ async def background_delete_documents(
     successful_deletions = []
     failed_deletions = []
 
-    # Set pipeline status to busy for deletion
+    # Double-check pipeline status before proceeding
     async with pipeline_status_lock:
+        if pipeline_status.get("busy", False):
+            logger.warning("Error: Unexpected pipeline busy state, aborting deletion.")
+            return  # Abort deletion operation
+
+        # Set pipeline status to busy for deletion
         pipeline_status.update(
             {
                 "busy": True,
@@ -836,24 +902,24 @@ async def background_delete_documents(
         # Loop through each document ID and delete them one by one
         for i, doc_id in enumerate(doc_ids, 1):
             async with pipeline_status_lock:
+                start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
+                logger.info(start_msg)
                 pipeline_status["cur_batch"] = i
-                pipeline_status["latest_message"] = (
-                    f"Deleting document {i}/{total_docs}: {doc_id}"
-                )
-                pipeline_status["history_messages"].append(
-                    f"Processing document {i}/{total_docs}: {doc_id}"
-                )
+                pipeline_status["latest_message"] = start_msg
+                pipeline_status["history_messages"].append(start_msg)
 
+            file_path = "#"
             try:
                 result = await rag.adelete_by_doc_id(doc_id)
-
+                file_path = (
+                    getattr(result, "file_path", "-") if "result" in locals() else "-"
+                )
                 if result.status == "success":
                     successful_deletions.append(doc_id)
                     success_msg = (
-                        f"Successfully deleted document {i}/{total_docs}: {doc_id}"
+                        f"Deleted document {i}/{total_docs}: {doc_id}[{file_path}]"
                     )
                     logger.info(success_msg)
-
                     async with pipeline_status_lock:
                         pipeline_status["history_messages"].append(success_msg)
 
@@ -872,6 +938,7 @@ async def background_delete_documents(
                                 )
                                 logger.info(file_delete_msg)
                                 async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = file_delete_msg
                                     pipeline_status["history_messages"].append(
                                         file_delete_msg
                                     )
@@ -881,6 +948,9 @@ async def background_delete_documents(
                                 )
                                 logger.warning(file_not_found_msg)
                                 async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = (
+                                        file_not_found_msg
+                                    )
                                     pipeline_status["history_messages"].append(
                                         file_not_found_msg
                                     )
@@ -888,6 +958,7 @@ async def background_delete_documents(
                             file_error_msg = f"Failed to delete file {result.file_path}: {str(file_error)}"
                             logger.error(file_error_msg)
                             async with pipeline_status_lock:
+                                pipeline_status["latest_message"] = file_error_msg
                                 pipeline_status["history_messages"].append(
                                     file_error_msg
                                 )
@@ -895,54 +966,51 @@ async def background_delete_documents(
                         no_file_msg = f"No valid file path found for document {doc_id}"
                         logger.warning(no_file_msg)
                         async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = no_file_msg
                             pipeline_status["history_messages"].append(no_file_msg)
                 else:
                     failed_deletions.append(doc_id)
-                    error_msg = f"Failed to delete document {i}/{total_docs}: {doc_id} - {result.message}"
+                    error_msg = f"Failed to delete {i}/{total_docs}: {doc_id}[{file_path}] - {result.message}"
                     logger.error(error_msg)
-
                     async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = error_msg
                         pipeline_status["history_messages"].append(error_msg)
 
             except Exception as e:
                 failed_deletions.append(doc_id)
-                error_msg = (
-                    f"Error deleting document {i}/{total_docs}: {doc_id} - {str(e)}"
-                )
+                error_msg = f"Error deleting document {i}/{total_docs}: {doc_id}[{file_path}] - {str(e)}"
                 logger.error(error_msg)
                 logger.error(traceback.format_exc())
-
                 async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = error_msg
                     pipeline_status["history_messages"].append(error_msg)
-
-        # Final summary
-        summary_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
-        logger.info(summary_msg)
-
-        async with pipeline_status_lock:
-            pipeline_status["history_messages"].append(summary_msg)
-            if successful_deletions:
-                pipeline_status["history_messages"].append(
-                    f"Successfully deleted: {', '.join(successful_deletions)}"
-                )
-            if failed_deletions:
-                pipeline_status["history_messages"].append(
-                    f"Failed to delete: {', '.join(failed_deletions)}"
-                )
 
     except Exception as e:
         error_msg = f"Critical error during batch deletion: {str(e)}"
         logger.error(error_msg)
         logger.error(traceback.format_exc())
-
         async with pipeline_status_lock:
             pipeline_status["history_messages"].append(error_msg)
     finally:
+        # Final summary and check for pending requests
         async with pipeline_status_lock:
             pipeline_status["busy"] = False
-            completion_msg = "Document deletion process completed."
+            completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
             pipeline_status["latest_message"] = completion_msg
             pipeline_status["history_messages"].append(completion_msg)
+
+            # Check if there are pending document indexing requests
+            has_pending_request = pipeline_status.get("request_pending", False)
+
+        # If there are pending requests, start document processing pipeline
+        if has_pending_request:
+            try:
+                logger.info(
+                    "Processing pending document indexing requests after deletion"
+                )
+                await rag.apipeline_process_enqueue_documents()
+            except Exception as e:
+                logger.error(f"Error processing pending documents after deletion: {e}")
 
 
 def create_document_routes(
@@ -997,18 +1065,21 @@ def create_document_routes(
             HTTPException: If the file type is not supported (400) or other errors occur (500).
         """
         try:
-            if not doc_manager.is_supported_file(file.filename):
+            # Sanitize filename to prevent Path Traversal attacks
+            safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
+
+            if not doc_manager.is_supported_file(safe_filename):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
 
-            file_path = doc_manager.input_dir / file.filename
+            file_path = doc_manager.input_dir / safe_filename
             # Check if file already exists
             if file_path.exists():
                 return InsertResponse(
                     status="duplicated",
-                    message=f"File '{file.filename}' already exists in the input directory.",
+                    message=f"File '{safe_filename}' already exists in the input directory.",
                 )
 
             with open(file_path, "wb") as buffer:
@@ -1019,7 +1090,7 @@ def create_document_routes(
 
             return InsertResponse(
                 status="success",
-                message=f"File '{file.filename}' uploaded successfully. Processing will continue in background.",
+                message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
             )
         except Exception as e:
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
@@ -1230,11 +1301,11 @@ def create_document_routes(
                     "Starting to delete files in input directory"
                 )
 
-            # Delete all files in input_dir
+            # Delete only files in the current directory, preserve files in subdirectories
             deleted_files_count = 0
             file_errors_count = 0
 
-            for file_path in doc_manager.input_dir.glob("**/*"):
+            for file_path in doc_manager.input_dir.glob("*"):
                 if file_path.is_file():
                     try:
                         file_path.unlink()
