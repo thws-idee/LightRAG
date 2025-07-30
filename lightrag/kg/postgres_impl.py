@@ -300,7 +300,7 @@ class PostgreSQLDB:
             self.namespace_prefix+"VDB_ENTITY": ["create_time", "update_time"],
             self.namespace_prefix+"VDB_RELATION": ["create_time", "update_time"],
             self.namespace_prefix+"DOC_CHUNKS": ["create_time", "update_time"],
-            self.namespace_prefix+"DOC_STATUS": ["create_at", "update_at"],
+            self.namespace_prefix+"DOC_STATUS": ["created_at", "updated_at"],
         }
 
         for table_name, columns in tables_to_migrate.items():
@@ -1242,7 +1242,7 @@ class PGKVStorage(BaseKVStorage):
         Returns:
             Dictionary containing all stored data
         """
-        table_name = namespace_to_table_name(self.namespace)
+        table_name = self.db.namespace_prefix + namespace_to_table_name(self.namespace)
         if not table_name:
             logger.error(f"Unknown namespace for get_all: {self.namespace}")
             return {}
@@ -1339,27 +1339,52 @@ class PGKVStorage(BaseKVStorage):
 
         return response if response else None
 
-    # Query by id
+    # Query by ids
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get doc_chunks data by id"""
+        """Get data by ids"""
         sql = SQL_TEMPLATES["get_by_ids_" + self.base_namespace].format(
-            ids=",".join([f"'{id}'" for id in ids],prefix=self.db.namespace_prefix),
-        )
+            ids=",".join([f"'{id}'" for id in ids]),prefix=self.db.namespace_prefix)
         params = {"workspace": self.db.workspace}
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            array_res = await self.db.query(sql, params, multirows=True)
-            modes = set()
-            dict_res: dict[str, dict] = {}
-            for row in array_res:
-                modes.add(row["mode"])
-            for mode in modes:
-                if mode not in dict_res:
-                    dict_res[mode] = {}
-            for row in array_res:
-                dict_res[row["mode"]][row["id"]] = row
-            return [{k: v} for k, v in dict_res.items()]
-        else:
-            return await self.db.query(sql, params, multirows=True)
+        results = await self.db.query(sql, params, multirows=True)
+
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
+            # Parse llm_cache_list JSON string back to list for each result
+            for result in results:
+                llm_cache_list = result.get("llm_cache_list", [])
+                if isinstance(llm_cache_list, str):
+                    try:
+                        llm_cache_list = json.loads(llm_cache_list)
+                    except json.JSONDecodeError:
+                        llm_cache_list = []
+                result["llm_cache_list"] = llm_cache_list
+                create_time = result.get("create_time", 0)
+                update_time = result.get("update_time", 0)
+                result["create_time"] = create_time
+                result["update_time"] = create_time if update_time == 0 else update_time
+
+        # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
+        if results and is_namespace(
+            self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+        ):
+            processed_results = []
+            for row in results:
+                create_time = row.get("create_time", 0)
+                update_time = row.get("update_time", 0)
+                # Map field names and add cache_type for compatibility
+                processed_row = {
+                    **row,
+                    "return": row.get("return_value", ""),
+                    "cache_type": row.get("cache_type"),
+                    "original_prompt": row.get("original_prompt", ""),
+                    "chunk_id": row.get("chunk_id"),
+                    "mode": row.get("mode", "default"),
+                    "create_time": create_time,
+                    "update_time": create_time if update_time == 0 else update_time,
+                }
+                processed_results.append(processed_row)
+            return processed_results
+
+        return results if results else []
 
     async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         """Specifically for llm_response_cache."""
@@ -1398,7 +1423,7 @@ class PGKVStorage(BaseKVStorage):
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
+                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"].format(prefix=self.db.namespace_prefix)
                 _data = {
                     "workspace": self.db.workspace,
                     "id": k,
@@ -1680,7 +1705,7 @@ class PGVectorStorage(BaseVectorStorage):
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
         # Use parameterized document IDs (None means search across all documents)
-        logger.info("Query: " + str((self.base_namespace).split('_')[-1]))
+        logger.info("PGQuery: " + str((self.base_namespace).split('_')[-1]))
         sql = SQL_TEMPLATES[str((self.base_namespace).split('_')[-1])].format(embedding_string=embedding_string,prefix=self.db.namespace_prefix)
         params = {
             "workspace": self.db.workspace,
@@ -1801,7 +1826,7 @@ class PGVectorStorage(BaseVectorStorage):
         Returns:
             The vector data if found, or None if not found
         """
-        table_name = namespace_to_table_name(self.namespace,self.db.namespace_prefix)
+        table_name = self.namespace_prefix + namespace_to_table_name(self.namespace,self.db.namespace_prefix)
         if not table_name:
             logger.error(f"Unknown namespace for ID lookup: {self.namespace}")
             return None
@@ -1927,7 +1952,7 @@ class PGDocStatusStorage(DocStatusStorage):
             raise
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
-        sql = """select * from {prefix}DOC_STATUS where workspace=$1 and id=$2""".format(prefix=self.db.namespace_prefix)
+        sql = """SELECT * FROM {prefix}DOC_STATUS where workspace=$1 and id=$2""".format(prefix=self.namespace_prefix)
         params = {"workspace": self.db.workspace, "id": id}
         result = await self.db.query(sql, params, True)
         if result is None or result == []:
@@ -1972,7 +1997,7 @@ class PGDocStatusStorage(DocStatusStorage):
         if not ids:
             return []
 
-        sql = """SELECT * FROM {prefix}DOC_STATUS WHERE workspace=$1 AND id = ANY($2)""".format(prefix=self.db.namespace_prefix)
+        sql = """SELECT * FROM {prefix}DOC_STATUS WHERE workspace=$1 AND id = ANY($2)""".format(prefix=self.namespace_prefix)
         params = {"workspace": self.db.workspace, "ids": ids}
 
         results = await self.db.query(sql, params, True)
@@ -3738,7 +3763,7 @@ TABLES = {
 	               file_path TEXT NULL,
 	               chunks_list JSONB NULL DEFAULT '[]'::jsonb,
 	               track_id varchar(255) NULL,
-	               metadata JSONB NULL DEFAULT '{}'::jsonb,
+	               metadata JSONB NULL DEFAULT '[]'::jsonb,
 	               error_msg TEXT NULL,
 	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -3754,7 +3779,7 @@ SQL_TEMPLATES = {
                                 FROM {prefix}DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
-                                chunk_order_index, full_doc_id,
+                                chunk_order_index, full_doc_id, file_path,
                                 COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
@@ -3772,7 +3797,7 @@ SQL_TEMPLATES = {
                                  FROM {prefix}DOC_FULL WHERE workspace=$1 AND id IN ({ids})
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
-                                  chunk_order_index, full_doc_id,
+                                  chunk_order_index, full_doc_id, file_path,
                                   COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
                                   EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                   EXTRACT(EPOCH FROM update_time)::BIGINT as update_time

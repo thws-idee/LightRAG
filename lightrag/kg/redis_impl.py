@@ -144,7 +144,7 @@ class RedisKVStorage(BaseKVStorage):
         # Build namespace with workspace prefix for data isolation
         if effective_workspace:
             self.namespace = f"{effective_workspace}_{self.namespace}"
-            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+            logger.info(f"Final REDIS namespace with workspace prefix: '{self.namespace}'")
         # When workspace is empty, keep the original namespace unchanged
 
         self._redis_url = os.environ.get(
@@ -603,7 +603,7 @@ class RedisDocStatusStorage(DocStatusStorage):
         # Build namespace with workspace prefix for data isolation
         if effective_workspace:
             self.namespace = f"{effective_workspace}_{self.namespace}"
-            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+            logger.info(f"Final REDIS namespace with workspace prefix: '{self.namespace}'")
         # When workspace is empty, keep the original namespace unchanged
 
         self._redis_url = os.environ.get(

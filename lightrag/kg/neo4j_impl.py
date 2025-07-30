@@ -99,7 +99,8 @@ class Neo4JStorage(BaseGraphStorage):
             ),
         )
         DATABASE = os.environ.get(
-            "NEO4J_DATABASE", self.namespace)
+            "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
+        )
 
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(
             URI,
@@ -817,19 +818,18 @@ class Neo4JStorage(BaseGraphStorage):
         entity_type = properties["entity_type"]
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
-        entity_id = properties["entity_id"]
+
         try:
             async with self._driver.session(database=self._DATABASE) as session:
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
-                    query = """
-                    MERGE (n:base {entity_id: $entity_id})
+                    query = f"""
+                    MERGE (n:`{workspace_label}` {{entity_id: $entity_id}})
                     SET n += $properties
-                    RETURN n
+                    SET n:`{entity_type}`
                     """
-                    result = await tx.run(query, entity_id=entity_id, properties=properties)
-                    logger.debug(
-                        f"Upserted node with entity_id '{entity_id}' and properties: {properties}"
+                    result = await tx.run(
+                        query, entity_id=node_id, properties=properties
                     )
                     await result.consume()  # Ensure result is fully consumed
 
@@ -955,13 +955,14 @@ class Neo4JStorage(BaseGraphStorage):
                     OPTIONAL MATCH (n)-[r]-()
                     WITH n, COALESCE(count(r), 0) AS degree
                     ORDER BY degree DESC
-                    LIMIT $max
-                    WITH collect({node: n}) AS filtered_nodes
+                    LIMIT $max_nodes
+                    WITH collect({{node: n}}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
                     OPTIONAL MATCH (a)-[r]-(b)
                     WHERE a IN kept_nodes AND b IN kept_nodes
-                    RETURN filtered_nodes AS node_info,collect(DISTINCT r) AS relationships
+                    RETURN filtered_nodes AS node_info,
+                           collect(DISTINCT r) AS relationships
                     """
                     result_set = None
                     try:
