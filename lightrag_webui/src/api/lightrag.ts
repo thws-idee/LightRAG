@@ -35,7 +35,6 @@ export type LightragStatus = {
     embedding_binding: string
     embedding_binding_host: string
     embedding_model: string
-    max_tokens: number
     kv_storage: string
     doc_status_storage: string
     graph_storage: string
@@ -43,6 +42,7 @@ export type LightragStatus = {
     workspace?: string
     max_graph_nodes?: string
     enable_rerank?: boolean
+    rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
     summary_language: string
@@ -183,6 +183,33 @@ export type TrackStatusResponse = {
   documents: DocStatusResponse[]
   total_count: number
   status_summary: Record<string, number>
+}
+
+export type DocumentsRequest = {
+  status_filter?: DocStatus | null
+  page: number
+  page_size: number
+  sort_field: 'created_at' | 'updated_at' | 'id' | 'file_path'
+  sort_direction: 'asc' | 'desc'
+}
+
+export type PaginationInfo = {
+  page: number
+  page_size: number
+  total_count: number
+  total_pages: number
+  has_next: boolean
+  has_prev: boolean
+}
+
+export type PaginatedDocsResponse = {
+  documents: DocStatusResponse[]
+  pagination: PaginationInfo
+  status_counts: Record<string, number>
+}
+
+export type StatusCountsResponse = {
+  status_counts: Record<string, number>
 }
 
 export type AuthStatusResponse = {
@@ -559,11 +586,11 @@ export const clearDocuments = async (): Promise<DocActionResponse> => {
   return response.data
 }
 
-export const clearCache = async (modes?: string[]): Promise<{
+export const clearCache = async (): Promise<{
   status: 'success' | 'fail'
   message: string
 }> => {
-  const response = await axiosInstance.post('/documents/clear_cache', { modes })
+  const response = await axiosInstance.post('/documents/clear_cache', {})
   return response.data
 }
 
@@ -712,5 +739,24 @@ export const checkEntityNameExists = async (entityName: string): Promise<boolean
  */
 export const getTrackStatus = async (trackId: string): Promise<TrackStatusResponse> => {
   const response = await axiosInstance.get(`/documents/track_status/${encodeURIComponent(trackId)}`)
+  return response.data
+}
+
+/**
+ * Get documents with pagination support
+ * @param request The pagination request parameters
+ * @returns Promise with paginated documents response
+ */
+export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<PaginatedDocsResponse> => {
+  const response = await axiosInstance.post('/documents/paginated', request)
+  return response.data
+}
+
+/**
+ * Get counts of documents by status
+ * @returns Promise with status counts response
+ */
+export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
+  const response = await axiosInstance.get('/documents/status_counts')
   return response.data
 }

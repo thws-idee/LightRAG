@@ -3,8 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from pyuca import Collator
-from lightrag.utils import logger
+from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
 import traceback
@@ -258,19 +257,12 @@ class ClearDocumentsResponse(BaseModel):
 class ClearCacheRequest(BaseModel):
     """Request model for clearing cache
 
-    Attributes:
-        modes: Optional list of cache modes to clear
+    This model is kept for API compatibility but no longer accepts any parameters.
+    All cache will be cleared regardless of the request content.
     """
 
-    modes: Optional[
-        List[Literal["default", "naive", "local", "global", "hybrid", "mix"]]
-    ] = Field(
-        default=None,
-        description="Modes of cache to clear. If None, clears all cache.",
-    )
-
     class Config:
-        json_schema_extra = {"example": {"modes": ["default", "naive"]}}
+        json_schema_extra = {"example": {}}
 
 
 class ClearCacheResponse(BaseModel):
@@ -492,6 +484,150 @@ class TrackStatusResponse(BaseModel):
         }
 
 
+class DocumentsRequest(BaseModel):
+    """Request model for paginated document queries
+
+    Attributes:
+        status_filter: Filter by document status, None for all statuses
+        page: Page number (1-based)
+        page_size: Number of documents per page (10-200)
+        sort_field: Field to sort by ('created_at', 'updated_at', 'id', 'file_path')
+        sort_direction: Sort direction ('asc' or 'desc')
+    """
+
+    status_filter: Optional[DocStatus] = Field(
+        default=None, description="Filter by document status, None for all statuses"
+    )
+    page: int = Field(default=1, ge=1, description="Page number (1-based)")
+    page_size: int = Field(
+        default=50, ge=10, le=200, description="Number of documents per page (10-200)"
+    )
+    sort_field: Literal["created_at", "updated_at", "id", "file_path"] = Field(
+        default="updated_at", description="Field to sort by"
+    )
+    sort_direction: Literal["asc", "desc"] = Field(
+        default="desc", description="Sort direction"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status_filter": "PROCESSED",
+                "page": 1,
+                "page_size": 50,
+                "sort_field": "updated_at",
+                "sort_direction": "desc",
+            }
+        }
+
+
+class PaginationInfo(BaseModel):
+    """Pagination information
+
+    Attributes:
+        page: Current page number
+        page_size: Number of items per page
+        total_count: Total number of items
+        total_pages: Total number of pages
+        has_next: Whether there is a next page
+        has_prev: Whether there is a previous page
+    """
+
+    page: int = Field(description="Current page number")
+    page_size: int = Field(description="Number of items per page")
+    total_count: int = Field(description="Total number of items")
+    total_pages: int = Field(description="Total number of pages")
+    has_next: bool = Field(description="Whether there is a next page")
+    has_prev: bool = Field(description="Whether there is a previous page")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "page": 1,
+                "page_size": 50,
+                "total_count": 150,
+                "total_pages": 3,
+                "has_next": True,
+                "has_prev": False,
+            }
+        }
+
+
+class PaginatedDocsResponse(BaseModel):
+    """Response model for paginated document queries
+
+    Attributes:
+        documents: List of documents for the current page
+        pagination: Pagination information
+        status_counts: Count of documents by status for all documents
+    """
+
+    documents: List[DocStatusResponse] = Field(
+        description="List of documents for the current page"
+    )
+    pagination: PaginationInfo = Field(description="Pagination information")
+    status_counts: Dict[str, int] = Field(
+        description="Count of documents by status for all documents"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "documents": [
+                    {
+                        "id": "doc_123456",
+                        "content_summary": "Research paper on machine learning",
+                        "content_length": 15240,
+                        "status": "PROCESSED",
+                        "created_at": "2025-03-31T12:34:56",
+                        "updated_at": "2025-03-31T12:35:30",
+                        "track_id": "upload_20250729_170612_abc123",
+                        "chunks_count": 12,
+                        "error_msg": None,
+                        "metadata": {"author": "John Doe", "year": 2025},
+                        "file_path": "research_paper.pdf",
+                    }
+                ],
+                "pagination": {
+                    "page": 1,
+                    "page_size": 50,
+                    "total_count": 150,
+                    "total_pages": 3,
+                    "has_next": True,
+                    "has_prev": False,
+                },
+                "status_counts": {
+                    "PENDING": 10,
+                    "PROCESSING": 5,
+                    "PROCESSED": 130,
+                    "FAILED": 5,
+                },
+            }
+        }
+
+
+class StatusCountsResponse(BaseModel):
+    """Response model for document status counts
+
+    Attributes:
+        status_counts: Count of documents by status
+    """
+
+    status_counts: Dict[str, int] = Field(description="Count of documents by status")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status_counts": {
+                    "PENDING": 10,
+                    "PROCESSING": 5,
+                    "PROCESSED": 130,
+                    "FAILED": 5,
+                }
+            }
+        }
+
+
 class PipelineStatusResponse(BaseModel):
     """Response model for pipeline status
 
@@ -597,7 +733,7 @@ class DocumentManager:
         new_files = []
         for ext in self.supported_extensions:
             logger.debug(f"Scanning for {ext} files in {self.input_dir}")
-            for file_path in self.input_dir.rglob(f"*{ext}"):
+            for file_path in self.input_dir.glob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
         return new_files
@@ -607,6 +743,39 @@ class DocumentManager:
 
     def is_supported_file(self, filename: str) -> bool:
         return any(filename.lower().endswith(ext) for ext in self.supported_extensions)
+
+
+def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str:
+    """Generate a unique filename in the target directory by adding numeric suffixes if needed
+
+    Args:
+        target_dir: Target directory path
+        original_name: Original filename
+
+    Returns:
+        str: Unique filename (may have numeric suffix added)
+    """
+    from pathlib import Path
+    import time
+
+    original_path = Path(original_name)
+    base_name = original_path.stem
+    extension = original_path.suffix
+
+    # Try original name first
+    if not (target_dir / original_name).exists():
+        return original_name
+
+    # Try with numeric suffixes 001-999
+    for i in range(1, 1000):
+        suffix = f"{i:03d}"
+        new_name = f"{base_name}_{suffix}{extension}"
+        if not (target_dir / new_name).exists():
+            return new_name
+
+    # Fallback with timestamp if all 999 slots are taken
+    timestamp = int(time.time())
+    return f"{base_name}_{timestamp}{extension}"
 
 
 async def pipeline_enqueue_file(
@@ -622,200 +791,456 @@ async def pipeline_enqueue_file(
         tuple: (success: bool, track_id: str)
     """
 
+    # Generate track_id if not provided
+    if track_id is None:
+        track_id = generate_track_id("unknown")
+
     try:
         content = ""
         ext = file_path.suffix.lower()
+        file_size = 0
+
+        # Get file size for error reporting
+        try:
+            file_size = file_path.stat().st_size
+        except Exception:
+            file_size = 0
 
         file = None
-        async with aiofiles.open(file_path, "rb") as f:
-            file = await f.read()
+        try:
+            async with aiofiles.open(file_path, "rb") as f:
+                file = await f.read()
+        except PermissionError as e:
+            error_files = [
+                {
+                    "file_path": str(file_path.name),
+                    "error_description": "[File Extraction]Permission denied - cannot read file",
+                    "original_error": str(e),
+                    "file_size": file_size,
+                }
+            ]
+            await rag.apipeline_enqueue_error_documents(error_files, track_id)
+            logger.error(
+                f"[File Extraction]Permission denied reading file: {file_path.name}"
+            )
+            return False, track_id
+        except FileNotFoundError as e:
+            error_files = [
+                {
+                    "file_path": str(file_path.name),
+                    "error_description": "[File Extraction]File not found",
+                    "original_error": str(e),
+                    "file_size": file_size,
+                }
+            ]
+            await rag.apipeline_enqueue_error_documents(error_files, track_id)
+            logger.error(f"[File Extraction]File not found: {file_path.name}")
+            return False, track_id
+        except Exception as e:
+            error_files = [
+                {
+                    "file_path": str(file_path.name),
+                    "error_description": "[File Extraction]File reading error",
+                    "original_error": str(e),
+                    "file_size": file_size,
+                }
+            ]
+            await rag.apipeline_enqueue_error_documents(error_files, track_id)
+            logger.error(
+                f"[File Extraction]Error reading file {file_path.name}: {str(e)}"
+            )
+            return False, track_id
 
         # Process based on file type
-        match ext:
-            case (
-                ".txt"
-                | ".md"
-                | ".html"
-                | ".htm"
-                | ".tex"
-                | ".json"
-                | ".xml"
-                | ".yaml"
-                | ".yml"
-                | ".rtf"
-                | ".odt"
-                | ".epub"
-                | ".csv"
-                | ".log"
-                | ".conf"
-                | ".ini"
-                | ".properties"
-                | ".sql"
-                | ".bat"
-                | ".sh"
-                | ".c"
-                | ".cpp"
-                | ".py"
-                | ".java"
-                | ".js"
-                | ".ts"
-                | ".swift"
-                | ".go"
-                | ".rb"
-                | ".php"
-                | ".css"
-                | ".scss"
-                | ".less"
-            ):
-                try:
-                    # Try to decode as UTF-8
-                    content = file.decode("utf-8")
+        try:
+            match ext:
+                case (
+                    ".txt"
+                    | ".md"
+                    | ".html"
+                    | ".htm"
+                    | ".tex"
+                    | ".json"
+                    | ".xml"
+                    | ".yaml"
+                    | ".yml"
+                    | ".rtf"
+                    | ".odt"
+                    | ".epub"
+                    | ".csv"
+                    | ".log"
+                    | ".conf"
+                    | ".ini"
+                    | ".properties"
+                    | ".sql"
+                    | ".bat"
+                    | ".sh"
+                    | ".c"
+                    | ".cpp"
+                    | ".py"
+                    | ".java"
+                    | ".js"
+                    | ".ts"
+                    | ".swift"
+                    | ".go"
+                    | ".rb"
+                    | ".php"
+                    | ".css"
+                    | ".scss"
+                    | ".less"
+                ):
+                    try:
+                        # Try to decode as UTF-8
+                        content = file.decode("utf-8")
 
-                    # Validate content
-                    if not content or len(content.strip()) == 0:
-                        logger.error(f"Empty content in file: {file_path.name}")
-                        return False
-
-                    # Check if content looks like binary data string representation
-                    if content.startswith("b'") or content.startswith('b"'):
-                        logger.error(
-                            f"File {file_path.name} appears to contain binary data representation instead of text"
-                        )
-                        return False
-
-                except UnicodeDecodeError:
-                    logger.error(
-                        f"File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
-                    )
-                    return False
-            case ".pdf":
-                if global_args.document_loading_engine == "DOCLING":
-                    if not pm.is_installed("docling"):  # type: ignore
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter  # type: ignore
-
-                    converter = DocumentConverter()
-                    result = converter.convert(file_path)
-                    content = result.document.export_to_markdown()
-                else:
-                    if not pm.is_installed("pypdf2"):  # type: ignore
-                        pm.install("pypdf2")
-                    from PyPDF2 import PdfReader  # type: ignore
-                    from io import BytesIO
-
-                    pdf_file = BytesIO(file)
-                    reader = PdfReader(pdf_file)
-                    for page in reader.pages:
-                        content += page.extract_text() + "\n"
-            case ".docx":
-                if global_args.document_loading_engine == "DOCLING":
-                    if not pm.is_installed("docling"):  # type: ignore
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter  # type: ignore
-
-                    converter = DocumentConverter()
-                    result = converter.convert(file_path)
-                    content = result.document.export_to_markdown()
-                else:
-                    if not pm.is_installed("python-docx"):  # type: ignore
-                        try:
-                            pm.install("python-docx")
-                        except Exception:
-                            pm.install("docx")
-                    from docx import Document  # type: ignore
-                    from io import BytesIO
-
-                    docx_file = BytesIO(file)
-                    doc = Document(docx_file)
-                    content = "\n".join(
-                        [paragraph.text for paragraph in doc.paragraphs]
-                    )
-            case ".pptx":
-                if global_args.document_loading_engine == "DOCLING":
-                    if not pm.is_installed("docling"):  # type: ignore
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter  # type: ignore
-
-                    converter = DocumentConverter()
-                    result = converter.convert(file_path)
-                    content = result.document.export_to_markdown()
-                else:
-                    if not pm.is_installed("python-pptx"):  # type: ignore
-                        pm.install("pptx")
-                    from pptx import Presentation  # type: ignore
-                    from io import BytesIO
-
-                    pptx_file = BytesIO(file)
-                    prs = Presentation(pptx_file)
-                    for slide in prs.slides:
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text"):
-                                content += shape.text + "\n"
-            case ".xlsx":
-                if global_args.document_loading_engine == "DOCLING":
-                    if not pm.is_installed("docling"):  # type: ignore
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter  # type: ignore
-
-                    converter = DocumentConverter()
-                    result = converter.convert(file_path)
-                    content = result.document.export_to_markdown()
-                else:
-                    if not pm.is_installed("openpyxl"):  # type: ignore
-                        pm.install("openpyxl")
-                    from openpyxl import load_workbook  # type: ignore
-                    from io import BytesIO
-
-                    xlsx_file = BytesIO(file)
-                    wb = load_workbook(xlsx_file)
-                    for sheet in wb:
-                        content += f"Sheet: {sheet.title}\n"
-                        for row in sheet.iter_rows(values_only=True):
-                            content += (
-                                "\t".join(
-                                    str(cell) if cell is not None else ""
-                                    for cell in row
-                                )
-                                + "\n"
+                        # Validate content
+                        if not content or len(content.strip()) == 0:
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": "[File Extraction]Empty file content",
+                                    "original_error": "File contains no content or only whitespace",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
                             )
-                        content += "\n"
-            case _:
-                logger.error(
-                    f"Unsupported file type: {file_path.name} (extension {ext})"
-                )
-                return False
+                            logger.error(
+                                f"[File Extraction]Empty content in file: {file_path.name}"
+                            )
+                            return False, track_id
+
+                        # Check if content looks like binary data string representation
+                        if content.startswith("b'") or content.startswith('b"'):
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": "[File Extraction]Binary data in text file",
+                                    "original_error": "File appears to contain binary data representation instead of text",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
+                            )
+                            logger.error(
+                                f"[File Extraction]File {file_path.name} appears to contain binary data representation instead of text"
+                            )
+                            return False, track_id
+
+                    except UnicodeDecodeError as e:
+                        error_files = [
+                            {
+                                "file_path": str(file_path.name),
+                                "error_description": "[File Extraction]UTF-8 encoding error, please convert it to UTF-8 before processing",
+                                "original_error": f"File is not valid UTF-8 encoded text: {str(e)}",
+                                "file_size": file_size,
+                            }
+                        ]
+                        await rag.apipeline_enqueue_error_documents(
+                            error_files, track_id
+                        )
+                        logger.error(
+                            f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
+                        )
+                        return False, track_id
+
+                case ".pdf":
+                    try:
+                        if global_args.document_loading_engine == "DOCLING":
+                            if not pm.is_installed("docling"):  # type: ignore
+                                pm.install("docling")
+                            from docling.document_converter import DocumentConverter  # type: ignore
+
+                            converter = DocumentConverter()
+                            result = converter.convert(file_path)
+                            content = result.document.export_to_markdown()
+                        else:
+                            if not pm.is_installed("pypdf2"):  # type: ignore
+                                pm.install("pypdf2")
+                            from PyPDF2 import PdfReader  # type: ignore
+                            from io import BytesIO
+
+                            pdf_file = BytesIO(file)
+                            reader = PdfReader(pdf_file)
+                            for page in reader.pages:
+                                content += page.extract_text() + "\n"
+                    except Exception as e:
+                        error_files = [
+                            {
+                                "file_path": str(file_path.name),
+                                "error_description": "[File Extraction]PDF processing error",
+                                "original_error": f"Failed to extract text from PDF: {str(e)}",
+                                "file_size": file_size,
+                            }
+                        ]
+                        await rag.apipeline_enqueue_error_documents(
+                            error_files, track_id
+                        )
+                        logger.error(
+                            f"[File Extraction]Error processing PDF {file_path.name}: {str(e)}"
+                        )
+                        return False, track_id
+
+                case ".docx":
+                    try:
+                        if global_args.document_loading_engine == "DOCLING":
+                            if not pm.is_installed("docling"):  # type: ignore
+                                pm.install("docling")
+                            from docling.document_converter import DocumentConverter  # type: ignore
+
+                            converter = DocumentConverter()
+                            result = converter.convert(file_path)
+                            content = result.document.export_to_markdown()
+                        else:
+                            if not pm.is_installed("python-docx"):  # type: ignore
+                                try:
+                                    pm.install("python-docx")
+                                except Exception:
+                                    pm.install("docx")
+                            from docx import Document  # type: ignore
+                            from io import BytesIO
+
+                            docx_file = BytesIO(file)
+                            doc = Document(docx_file)
+                            content = "\n".join(
+                                [paragraph.text for paragraph in doc.paragraphs]
+                            )
+                    except Exception as e:
+                        error_files = [
+                            {
+                                "file_path": str(file_path.name),
+                                "error_description": "[File Extraction]DOCX processing error",
+                                "original_error": f"Failed to extract text from DOCX: {str(e)}",
+                                "file_size": file_size,
+                            }
+                        ]
+                        await rag.apipeline_enqueue_error_documents(
+                            error_files, track_id
+                        )
+                        logger.error(
+                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
+                        )
+                        return False, track_id
+
+                case ".pptx":
+                    try:
+                        if global_args.document_loading_engine == "DOCLING":
+                            if not pm.is_installed("docling"):  # type: ignore
+                                pm.install("docling")
+                            from docling.document_converter import DocumentConverter  # type: ignore
+
+                            converter = DocumentConverter()
+                            result = converter.convert(file_path)
+                            content = result.document.export_to_markdown()
+                        else:
+                            if not pm.is_installed("python-pptx"):  # type: ignore
+                                pm.install("pptx")
+                            from pptx import Presentation  # type: ignore
+                            from io import BytesIO
+
+                            pptx_file = BytesIO(file)
+                            prs = Presentation(pptx_file)
+                            for slide in prs.slides:
+                                for shape in slide.shapes:
+                                    if hasattr(shape, "text"):
+                                        content += shape.text + "\n"
+                    except Exception as e:
+                        error_files = [
+                            {
+                                "file_path": str(file_path.name),
+                                "error_description": "[File Extraction]PPTX processing error",
+                                "original_error": f"Failed to extract text from PPTX: {str(e)}",
+                                "file_size": file_size,
+                            }
+                        ]
+                        await rag.apipeline_enqueue_error_documents(
+                            error_files, track_id
+                        )
+                        logger.error(
+                            f"[File Extraction]Error processing PPTX {file_path.name}: {str(e)}"
+                        )
+                        return False, track_id
+
+                case ".xlsx":
+                    try:
+                        if global_args.document_loading_engine == "DOCLING":
+                            if not pm.is_installed("docling"):  # type: ignore
+                                pm.install("docling")
+                            from docling.document_converter import DocumentConverter  # type: ignore
+
+                            converter = DocumentConverter()
+                            result = converter.convert(file_path)
+                            content = result.document.export_to_markdown()
+                        else:
+                            if not pm.is_installed("openpyxl"):  # type: ignore
+                                pm.install("openpyxl")
+                            from openpyxl import load_workbook  # type: ignore
+                            from io import BytesIO
+
+                            xlsx_file = BytesIO(file)
+                            wb = load_workbook(xlsx_file)
+                            for sheet in wb:
+                                content += f"Sheet: {sheet.title}\n"
+                                for row in sheet.iter_rows(values_only=True):
+                                    content += (
+                                        "\t".join(
+                                            str(cell) if cell is not None else ""
+                                            for cell in row
+                                        )
+                                        + "\n"
+                                    )
+                                content += "\n"
+                    except Exception as e:
+                        error_files = [
+                            {
+                                "file_path": str(file_path.name),
+                                "error_description": "[File Extraction]XLSX processing error",
+                                "original_error": f"Failed to extract text from XLSX: {str(e)}",
+                                "file_size": file_size,
+                            }
+                        ]
+                        await rag.apipeline_enqueue_error_documents(
+                            error_files, track_id
+                        )
+                        logger.error(
+                            f"[File Extraction]Error processing XLSX {file_path.name}: {str(e)}"
+                        )
+                        return False, track_id
+
+                case _:
+                    error_files = [
+                        {
+                            "file_path": str(file_path.name),
+                            "error_description": f"[File Extraction]Unsupported file type: {ext}",
+                            "original_error": f"File extension {ext} is not supported",
+                            "file_size": file_size,
+                        }
+                    ]
+                    await rag.apipeline_enqueue_error_documents(error_files, track_id)
+                    logger.error(
+                        f"[File Extraction]Unsupported file type: {file_path.name} (extension {ext})"
+                    )
+                    return False, track_id
+
+        except Exception as e:
+            error_files = [
+                {
+                    "file_path": str(file_path.name),
+                    "error_description": "[File Extraction]File format processing error",
+                    "original_error": f"Unexpected error during file extracting: {str(e)}",
+                    "file_size": file_size,
+                }
+            ]
+            await rag.apipeline_enqueue_error_documents(error_files, track_id)
+            logger.error(
+                f"[File Extraction]Unexpected error during {file_path.name} extracting: {str(e)}"
+            )
+            return False, track_id
 
         # Insert into the RAG queue
         if content:
             # Check if content contains only whitespace characters
             if not content.strip():
+                error_files = [
+                    {
+                        "file_path": str(file_path.name),
+                        "error_description": "[File Extraction]File contains only whitespace",
+                        "original_error": "File content contains only whitespace characters",
+                        "file_size": file_size,
+                    }
+                ]
+                await rag.apipeline_enqueue_error_documents(error_files, track_id)
                 logger.warning(
-                    f"File contains only whitespace characters. file_paths={file_path.name}"
+                    f"[File Extraction]File contains only whitespace characters: {file_path.name}"
+                )
+                return False, track_id
+
+            try:
+                await rag.apipeline_enqueue_documents(
+                    content, file_paths=file_path.name, track_id=track_id
                 )
 
-            # Generate track_id if not provided
-            if track_id is None:
-                track_id = generate_track_id("unkown")
+                logger.info(
+                    f"Successfully extracted and enqueued file: {file_path.name}"
+                )
 
-            await rag.apipeline_enqueue_documents(
-                content, file_paths=file_path.name, track_id=track_id
-            )
+                # Move file to __enqueued__ directory after enqueuing
+                try:
+                    enqueued_dir = file_path.parent / "__enqueued__"
+                    enqueued_dir.mkdir(exist_ok=True)
 
-            logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
-            return True, track_id
+                    # Generate unique filename to avoid conflicts
+                    unique_filename = get_unique_filename_in_enqueued(
+                        enqueued_dir, file_path.name
+                    )
+                    target_path = enqueued_dir / unique_filename
+
+                    # Move the file
+                    file_path.rename(target_path)
+                    logger.debug(
+                        f"Moved file to enqueued directory: {file_path.name} -> {unique_filename}"
+                    )
+
+                except Exception as move_error:
+                    logger.error(
+                        f"Failed to move file {file_path.name} to __enqueued__ directory: {move_error}"
+                    )
+                    # Don't affect the main function's success status
+
+                return True, track_id
+
+            except Exception as e:
+                error_files = [
+                    {
+                        "file_path": str(file_path.name),
+                        "error_description": "Document enqueue error",
+                        "original_error": f"Failed to enqueue document: {str(e)}",
+                        "file_size": file_size,
+                    }
+                ]
+                await rag.apipeline_enqueue_error_documents(error_files, track_id)
+                logger.error(f"Error enqueueing document {file_path.name}: {str(e)}")
+                return False, track_id
         else:
-            logger.error(f"No content could be extracted from file: {file_path.name}")
+            error_files = [
+                {
+                    "file_path": str(file_path.name),
+                    "error_description": "No content extracted",
+                    "original_error": "No content could be extracted from file",
+                    "file_size": file_size,
+                }
+            ]
+            await rag.apipeline_enqueue_error_documents(error_files, track_id)
+            logger.error(f"No content extracted from file: {file_path.name}")
+            return False, track_id
 
     except Exception as e:
-        logger.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
+        # Catch-all for any unexpected errors
+        try:
+            file_size = file_path.stat().st_size if file_path.exists() else 0
+        except Exception:
+            file_size = 0
+
+        error_files = [
+            {
+                "file_path": str(file_path.name),
+                "error_description": "Unexpected processing error",
+                "original_error": f"Unexpected error: {str(e)}",
+                "file_size": file_size,
+            }
+        ]
+        await rag.apipeline_enqueue_error_documents(error_files, track_id)
+        logger.error(f"Enqueuing file {file_path.name} error: {str(e)}")
         logger.error(traceback.format_exc())
+        return False, track_id
     finally:
         if file_path.name.startswith(temp_prefix):
             try:
                 file_path.unlink()
             except Exception as e:
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
-    return False, ""
 
 
 async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
@@ -853,9 +1278,10 @@ async def pipeline_index_files(
     try:
         enqueued = False
 
-        # Create Collator for Unicode sorting
-        collator = Collator()
-        sorted_file_paths = sorted(file_paths, key=lambda p: collator.sort_key(str(p)))
+        # Use get_pinyin_sort_key for Chinese pinyin sorting
+        sorted_file_paths = sorted(
+            file_paths, key=lambda p: get_pinyin_sort_key(str(p))
+        )
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
@@ -899,30 +1325,6 @@ async def pipeline_index_texts(
     await rag.apipeline_process_enqueue_documents()
 
 
-# TODO: deprecate after /insert_file is removed
-async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
-    """Save the uploaded file to a temporary location
-
-    Args:
-        file: The uploaded file
-
-    Returns:
-        Path: The path to the saved file
-    """
-    # Generate unique filename to avoid conflicts
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    unique_filename = f"{temp_prefix}{timestamp}_{file.filename}"
-
-    # Create a temporary file to save the uploaded content
-    temp_path = input_dir / "temp" / unique_filename
-    temp_path.parent.mkdir(exist_ok=True)
-
-    # Save the file
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return temp_path
-
-
 async def run_scanning_process(
     rag: LightRAG, doc_manager: DocumentManager, track_id: str = None
 ):
@@ -938,12 +1340,16 @@ async def run_scanning_process(
         total_files = len(new_files)
         logger.info(f"Found {total_files} files to index.")
 
-        if not new_files:
-            return
-
-        # Process all files at once with track_id
-        await pipeline_index_files(rag, new_files, track_id)
-        logger.info(f"Scanning process completed: {total_files} files Processed.")
+        if new_files:
+            # Process all files at once with track_id
+            await pipeline_index_files(rag, new_files, track_id)
+            logger.info(f"Scanning process completed: {total_files} files Processed.")
+        else:
+            # No new files to index, check if there are any documents in the queue
+            logger.info(
+                "No upload file found, check if there are any documents in the queue..."
+            )
+            await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
@@ -1009,7 +1415,7 @@ async def background_delete_documents(
                 if result.status == "success":
                     successful_deletions.append(doc_id)
                     success_msg = (
-                        f"Deleted document {i}/{total_docs}: {doc_id}[{file_path}]"
+                        f"Document deleted {i}/{total_docs}: {doc_id}[{file_path}]"
                     )
                     logger.info(success_msg)
                     async with pipeline_status_lock:
@@ -1022,30 +1428,70 @@ async def background_delete_documents(
                         and result.file_path != "unknown_source"
                     ):
                         try:
+                            deleted_files = []
+                            # check and delete files from input_dir directory
                             file_path = doc_manager.input_dir / result.file_path
                             if file_path.exists():
-                                file_path.unlink()
-                                file_delete_msg = (
-                                    f"Successfully deleted file: {result.file_path}"
-                                )
-                                logger.info(file_delete_msg)
+                                try:
+                                    file_path.unlink()
+                                    deleted_files.append(file_path.name)
+                                    file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
+                                    logger.info(file_delete_msg)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = (
+                                            file_delete_msg
+                                        )
+                                        pipeline_status["history_messages"].append(
+                                            file_delete_msg
+                                        )
+                                except Exception as file_error:
+                                    file_error_msg = f"Failed to delete input_dir file {result.file_path}: {str(file_error)}"
+                                    logger.debug(file_error_msg)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = (
+                                            file_error_msg
+                                        )
+                                        pipeline_status["history_messages"].append(
+                                            file_error_msg
+                                        )
+
+                            # Also check and delete files from __enqueued__ directory
+                            enqueued_dir = doc_manager.input_dir / "__enqueued__"
+                            if enqueued_dir.exists():
+                                # Look for files with the same name or similar names (with numeric suffixes)
+                                base_name = Path(result.file_path).stem
+                                extension = Path(result.file_path).suffix
+
+                                # Search for exact match and files with numeric suffixes
+                                for enqueued_file in enqueued_dir.glob(
+                                    f"{base_name}*{extension}"
+                                ):
+                                    try:
+                                        enqueued_file.unlink()
+                                        deleted_files.append(enqueued_file.name)
+                                        logger.info(
+                                            f"Successfully deleted enqueued file: {enqueued_file.name}"
+                                        )
+                                    except Exception as enqueued_error:
+                                        file_error_msg = f"Failed to delete enqueued file {enqueued_file.name}: {str(enqueued_error)}"
+                                        logger.debug(file_error_msg)
+                                        async with pipeline_status_lock:
+                                            pipeline_status["latest_message"] = (
+                                                file_error_msg
+                                            )
+                                            pipeline_status["history_messages"].append(
+                                                file_error_msg
+                                            )
+
+                            if deleted_files == []:
+                                file_error_msg = f"File deletion skipped, missing file: {result.file_path}"
+                                logger.warning(file_error_msg)
                                 async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = file_delete_msg
+                                    pipeline_status["latest_message"] = file_error_msg
                                     pipeline_status["history_messages"].append(
-                                        file_delete_msg
+                                        file_error_msg
                                     )
-                            else:
-                                file_not_found_msg = (
-                                    f"File not found for deletion: {result.file_path}"
-                                )
-                                logger.warning(file_not_found_msg)
-                                async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = (
-                                        file_not_found_msg
-                                    )
-                                    pipeline_status["history_messages"].append(
-                                        file_not_found_msg
-                                    )
+
                         except Exception as file_error:
                             file_error_msg = f"Failed to delete file {result.file_path}: {str(file_error)}"
                             logger.error(file_error_msg)
@@ -1055,7 +1501,9 @@ async def background_delete_documents(
                                     file_error_msg
                                 )
                     elif delete_file:
-                        no_file_msg = f"No valid file path found for document {doc_id}"
+                        no_file_msg = (
+                            f"File deletion skipped, missing file path: {doc_id}"
+                        )
                         logger.warning(no_file_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = no_file_msg
@@ -1353,6 +1801,8 @@ def create_document_routes(
             storages = [
                 rag.text_chunks,
                 rag.full_docs,
+                rag.full_entities,
+                rag.full_relations,
                 rag.entities_vdb,
                 rag.relationships_vdb,
                 rag.chunks_vdb,
@@ -1386,7 +1836,11 @@ def create_document_routes(
                     logger.error(error_msg)
                     storage_error_count += 1
                 else:
-                    logger.info(f"Successfully dropped {storage_name}")
+                    namespace = storages[i].namespace
+                    workspace = storages[i].workspace
+                    logger.info(
+                        f"Successfully dropped {storage_name}: {workspace}/{namespace}"
+                    )
                     storage_success_count += 1
 
             # Log storage drop results
@@ -1694,47 +2148,28 @@ def create_document_routes(
     )
     async def clear_cache(request: ClearCacheRequest):
         """
-        Clear cache data from the LLM response cache storage.
+        Clear all cache data from the LLM response cache storage.
 
-        This endpoint allows clearing specific modes of cache or all cache if no modes are specified.
-        Valid modes include: "default", "naive", "local", "global", "hybrid", "mix".
-        - "default" represents extraction cache.
-        - Other modes correspond to different query modes.
+        This endpoint clears all cached LLM responses regardless of mode.
+        The request body is accepted for API compatibility but is ignored.
 
         Args:
-            request (ClearCacheRequest): The request body containing optional modes to clear.
+            request (ClearCacheRequest): The request body (ignored for compatibility).
 
         Returns:
             ClearCacheResponse: A response object containing the status and message.
 
         Raises:
-            HTTPException: If an error occurs during cache clearing (400 for invalid modes, 500 for other errors).
+            HTTPException: If an error occurs during cache clearing (500).
         """
         try:
-            # Validate modes if provided
-            valid_modes = ["default", "naive", "local", "global", "hybrid", "mix"]
-            if request.modes and not all(mode in valid_modes for mode in request.modes):
-                invalid_modes = [
-                    mode for mode in request.modes if mode not in valid_modes
-                ]
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid mode(s): {invalid_modes}. Valid modes are: {valid_modes}",
-                )
-
-            # Call the aclear_cache method
-            await rag.aclear_cache(request.modes)
+            # Call the aclear_cache method (no modes parameter)
+            await rag.aclear_cache()
 
             # Prepare success message
-            if request.modes:
-                message = f"Successfully cleared cache for modes: {request.modes}"
-            else:
-                message = "Successfully cleared all cache"
+            message = "Successfully cleared all cache"
 
             return ClearCacheResponse(status="success", message=message)
-        except HTTPException:
-            # Re-raise HTTP exceptions
-            raise
         except Exception as e:
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
@@ -1884,6 +2319,120 @@ def create_document_routes(
             raise
         except Exception as e:
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/paginated",
+        response_model=PaginatedDocsResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_documents_paginated(
+        request: DocumentsRequest,
+    ) -> PaginatedDocsResponse:
+        """
+        Get documents with pagination support.
+
+        This endpoint retrieves documents with pagination, filtering, and sorting capabilities.
+        It provides better performance for large document collections by loading only the
+        requested page of data.
+
+        Args:
+            request (DocumentsRequest): The request body containing pagination parameters
+
+        Returns:
+            PaginatedDocsResponse: A response object containing:
+                - documents: List of documents for the current page
+                - pagination: Pagination information (page, total_count, etc.)
+                - status_counts: Count of documents by status for all documents
+
+        Raises:
+            HTTPException: If an error occurs while retrieving documents (500).
+        """
+        try:
+            # Get paginated documents and status counts in parallel
+            docs_task = rag.doc_status.get_docs_paginated(
+                status_filter=request.status_filter,
+                page=request.page,
+                page_size=request.page_size,
+                sort_field=request.sort_field,
+                sort_direction=request.sort_direction,
+            )
+            status_counts_task = rag.doc_status.get_all_status_counts()
+
+            # Execute both queries in parallel
+            (documents_with_ids, total_count), status_counts = await asyncio.gather(
+                docs_task, status_counts_task
+            )
+
+            # Convert documents to response format
+            doc_responses = []
+            for doc_id, doc in documents_with_ids:
+                doc_responses.append(
+                    DocStatusResponse(
+                        id=doc_id,
+                        content_summary=doc.content_summary,
+                        content_length=doc.content_length,
+                        status=doc.status,
+                        created_at=format_datetime(doc.created_at),
+                        updated_at=format_datetime(doc.updated_at),
+                        track_id=doc.track_id,
+                        chunks_count=doc.chunks_count,
+                        error_msg=doc.error_msg,
+                        metadata=doc.metadata,
+                        file_path=doc.file_path,
+                    )
+                )
+
+            # Calculate pagination info
+            total_pages = (total_count + request.page_size - 1) // request.page_size
+            has_next = request.page < total_pages
+            has_prev = request.page > 1
+
+            pagination = PaginationInfo(
+                page=request.page,
+                page_size=request.page_size,
+                total_count=total_count,
+                total_pages=total_pages,
+                has_next=has_next,
+                has_prev=has_prev,
+            )
+
+            return PaginatedDocsResponse(
+                documents=doc_responses,
+                pagination=pagination,
+                status_counts=status_counts,
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting paginated documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get(
+        "/status_counts",
+        response_model=StatusCountsResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_document_status_counts() -> StatusCountsResponse:
+        """
+        Get counts of documents by status.
+
+        This endpoint retrieves the count of documents in each processing status
+        (PENDING, PROCESSING, PROCESSED, FAILED) for all documents in the system.
+
+        Returns:
+            StatusCountsResponse: A response object containing status counts
+
+        Raises:
+            HTTPException: If an error occurs while retrieving status counts (500).
+        """
+        try:
+            status_counts = await rag.doc_status.get_all_status_counts()
+            return StatusCountsResponse(status_counts=status_counts)
+
+        except Exception as e:
+            logger.error(f"Error getting document status counts: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
