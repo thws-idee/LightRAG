@@ -2149,14 +2149,13 @@ class PGVectorStorage(BaseVectorStorage):
         logger.info("PGQuery: " + str((self.base_namespace).split('_')[-1]))
         sql = SQL_TEMPLATES[str((self.base_namespace).split('_')[-1])].format(embedding_string=embedding_string,prefix=self.db.namespace_prefix)
         params = {
-            "workspace": self.db.workspace,
-            "doc_ids": query_embedding,
-            "better_than_threshold": self.cosine_better_than_threshold,
+            "workspace": self.workspace,
+            "closer_than_threshold": 1 - self.cosine_better_than_threshold,
             "top_k": top_k,
         }
-        results = await self.db.query(sql, params=params, multirows=True)
+        results = await self.db.query(sql, params=list(params.values()), multirows=True)
         return results
-
+      
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
         pass
@@ -4761,55 +4760,34 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     "relationships": """
-    WITH relevant_chunks AS (
-        SELECT id as chunk_id
-        FROM {prefix}DOC_CHUNKS
-        WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
-    )
-    SELECT source_id as src_id, target_id as tgt_id, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at
-    FROM (
-        SELECT r.id, r.source_id, r.target_id, r.create_time, 1 - (r.content_vector <=> '[{embedding_string}]'::vector) as distance
-        FROM {prefix}VDB_RELATION r
-        JOIN relevant_chunks c ON c.chunk_id = ANY(r.chunk_ids)
-        WHERE r.workspace=$1
-    ) filtered
-    WHERE distance>$3
-    ORDER BY distance DESC
-    LIMIT $4
+                     SELECT r.source_id AS src_id,
+                            r.target_id AS tgt_id,
+                            EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
+                     FROM {prefix}VDB_RELATION r
+                     WHERE r.workspace = $1
+                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
+                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                     LIMIT $3;
     """,
     "entities": """
-        WITH relevant_chunks AS (
-            SELECT id as chunk_id
-            FROM {prefix}VDB_CHUNKS
-            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
-        )
-        SELECT entity_name, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM
-            (
-                SELECT e.id, e.entity_name, e.create_time, 1 - (e.content_vector <=> '[{embedding_string}]'::vector) as distance
+                SELECT e.entity_name,
+                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM {prefix}VDB_ENTITY e
-                JOIN relevant_chunks c ON c.chunk_id = ANY(e.chunk_ids)
-                WHERE e.workspace=$1
-            ) as chunk_distances
-            WHERE distance>$3
-            ORDER BY distance DESC
-            LIMIT $4
+                WHERE e.workspace = $1
+                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
+                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+                LIMIT $3;
     """,
     "chunks": """
-        WITH relevant_chunks AS (
-            SELECT id as chunk_id
-            FROM {prefix}DOC_CHUNKS
-            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
-        )
-        SELECT id, content, file_path, EXTRACT(EPOCH FROM create_time)::integer AS created_at, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM
-            (
-                SELECT id, content, file_path, create_time, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-                FROM {prefix}VDB_CHUNKS
-                WHERE workspace=$1
-                AND id IN (SELECT chunk_id FROM relevant_chunks)
-            ) as chunk_distances
-            WHERE distance>$3
-            ORDER BY distance DESC
-            LIMIT $4
+              SELECT c.id,
+                     c.content,
+                     c.file_path,
+                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
+              FROM {prefix}VDB_CHUNKS c
+              WHERE c.workspace = $1
+                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
+              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+              LIMIT $3;
     """,
     # DROP tables
     "drop_specifiy_table_workspace": """
