@@ -2153,7 +2153,7 @@ class PGVectorStorage(BaseVectorStorage):
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
             "top_k": top_k,
         }
-        results = await self.db.query(sql, params=list(params.values()), multirows=True)
+        results = await self.db.query(sql, params=params, multirows=True)
         return results
       
     async def index_done_callback(self) -> None:
